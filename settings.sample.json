@@ -1,0 +1,12 @@
+{
+  "host": "0.0.0.0",
+  "port": 4000,
+  "origins": [
+    "http://localhost:4000",
+    "http://127.0.0.1:4000"
+  ],
+  "qwenArgs": [
+    "--model",
+    "qwen2.5-coder:7b"
+  ]
+}

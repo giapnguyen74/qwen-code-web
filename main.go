@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"os/signal"
@@ -12,25 +13,60 @@ import (
 
 // cliOpts holds our own flags; everything else is forwarded to qwen.
 type cliOpts struct {
-	projectDir string // defaults to cwd
-	host       string
-	port       int
+	projectDir string   // defaults to cwd
+	host       string   // defaults to "0.0.0.0"
+	port       int      // defaults to 4000
+	origins    []string // allowed WebSocket origins
 	qwenArgs   []string // passed through verbatim to qwen
 }
 
+type settingsFile struct {
+	Host     string   `json:"host"`
+	Port     *int     `json:"port"`
+	Origins  []string `json:"origins"`
+	QwenArgs []string `json:"qwenArgs"`
+}
+
+func loadSettings() (settingsFile, error) {
+	var s settingsFile
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return s, err
+	}
+	path := filepath.Join(home, ".qwen-code-web", "settings.json")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return s, nil // file does not exist, that's fine
+		}
+		return s, err
+	}
+	if err := json.Unmarshal(data, &s); err != nil {
+		return s, fmt.Errorf("parsing %s: %w", path, err)
+	}
+	return s, nil
+}
+
 // parseArgs splits os.Args into our flags and qwen's flags.
-// We claim: --project-dir, --port, --host (and their -short forms).
+// We claim: --project-dir, --port, --host, --origins (and their -short forms).
 // Everything else (e.g. -c, -y, --model) is forwarded to qwen unchanged.
-func parseArgs() cliOpts {
-	opts := cliOpts{host: "0.0.0.0", port: 4000}
+func parseArgs(base cliOpts) cliOpts {
+	opts := base
 	args := os.Args[1:]
+
+	hasCliQwenArgs := false
+	var cliQwenArgs []string
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
 
 		// --flag=value forms
 		if v, ok := cutPrefix(arg, "--port="); ok {
-			opts.port, _ = strconv.Atoi(v)
+			p, err := strconv.Atoi(v)
+			if err != nil {
+				fatalf("invalid port: %q", v)
+			}
+			opts.port = p
 			continue
 		}
 		if v, ok := cutPrefix(arg, "--project-dir="); ok {
@@ -41,29 +77,59 @@ func parseArgs() cliOpts {
 			opts.host = v
 			continue
 		}
+		if v, ok := cutPrefix(arg, "--origins="); ok {
+			opts.origins = strings.Split(v, ",")
+			continue
+		}
+		if v, ok := cutPrefix(arg, "--origin="); ok {
+			opts.origins = strings.Split(v, ",")
+			continue
+		}
 
 		switch arg {
 		case "--port", "-port":
 			if i+1 < len(args) {
 				i++
-				opts.port, _ = strconv.Atoi(args[i])
+				p, err := strconv.Atoi(args[i])
+				if err != nil {
+					fatalf("invalid port: %q", args[i])
+				}
+				opts.port = p
+			} else {
+				fatalf("missing value for --port")
 			}
 		case "--project-dir", "-project-dir":
 			if i+1 < len(args) {
 				i++
 				opts.projectDir = args[i]
+			} else {
+				fatalf("missing value for --project-dir")
 			}
 		case "--host", "-host":
 			if i+1 < len(args) {
 				i++
 				opts.host = args[i]
+			} else {
+				fatalf("missing value for --host")
+			}
+		case "--origins", "-origins", "--origin", "-origin":
+			if i+1 < len(args) {
+				i++
+				opts.origins = strings.Split(args[i], ",")
+			} else {
+				fatalf("missing value for --origins")
 			}
 		case "--help", "-h", "-help":
 			printHelp()
 			os.Exit(0)
 		default:
-			opts.qwenArgs = append(opts.qwenArgs, arg)
+			hasCliQwenArgs = true
+			cliQwenArgs = append(cliQwenArgs, arg)
 		}
+	}
+
+	if hasCliQwenArgs {
+		opts.qwenArgs = cliQwenArgs
 	}
 
 	return opts
@@ -83,6 +149,7 @@ Our flags (consumed by qwen-code-web):
   --project-dir <path>   Project directory  (default: current directory)
   --port <n>             HTTP server port   (default: 4000)
   --host <addr>          Listen address     (default: 0.0.0.0 — all interfaces)
+  --origins <list>       WebSocket allowed origins (comma-separated list, e.g. "*")
 
 Everything behind -- is forwarded to qwen:
   -c, -y, --model, ...   See: qwen --help
@@ -96,10 +163,35 @@ Examples:
 }
 
 func main() {
-	opts := parseArgs()
+	// 1. Start with hardcoded defaults
+	baseOpts := cliOpts{
+		host: "0.0.0.0",
+		port: 4000,
+	}
+
+	// 2. Overwrite with ~/.qwen-code-web/settings.json if present
+	settings, err := loadSettings()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Warning: failed to load settings.json: %v\n", err)
+	} else {
+		if settings.Host != "" {
+			baseOpts.host = settings.Host
+		}
+		if settings.Port != nil {
+			baseOpts.port = *settings.Port
+		}
+		if settings.Origins != nil {
+			baseOpts.origins = settings.Origins
+		}
+		if settings.QwenArgs != nil {
+			baseOpts.qwenArgs = settings.QwenArgs
+		}
+	}
+
+	// 3. Overwrite with command-line arguments (highest priority)
+	opts := parseArgs(baseOpts)
 
 	// ── Resolve project directory ────────────────────────────────────────
-	var err error
 	if opts.projectDir == "" {
 		opts.projectDir, err = os.Getwd()
 		if err != nil {
@@ -121,8 +213,12 @@ func main() {
 		fatalf("session files: %v", err)
 	}
 
-	os.WriteFile(sf.eventsPath, nil, 0o600) //nolint:errcheck
-	os.WriteFile(sf.inputPath, nil, 0o600)  //nolint:errcheck
+	if err := os.WriteFile(sf.eventsPath, nil, 0o600); err != nil {
+		fatalf("initialising events file: %v", err)
+	}
+	if err := os.WriteFile(sf.inputPath, nil, 0o600); err != nil {
+		fatalf("initialising input file: %v", err)
+	}
 
 	// ── Print web UI address now — qwen will claim the terminal next ─────────
 	displayHost := opts.host
@@ -149,18 +245,19 @@ func main() {
 	state := newState()
 	state.setProcess(proc)
 
-	// exitCh is closed when qwen exits (naturally or via signal).
-	exitCh := make(chan struct{})
+	// exitCh receives the wait error when qwen exits.
+	exitCh := make(chan error, 1)
 	go func() {
-		proc.cmd.Wait() //nolint:errcheck
+		err := proc.cmd.Wait()
 		state.setStopped()
-		close(exitCh)
+		exitCh <- err
 	}()
 
 	// ── Server (runs silently in the background, no TTY needed) ──────────
 	srv := newServer(serverConfig{
 		host:       opts.host,
 		port:       opts.port,
+		origins:    opts.origins,
 		projectDir: projectDir,
 		eventsPath: sf.eventsPath,
 		inputPath:  sf.inputPath,
@@ -169,6 +266,7 @@ func main() {
 	go func() {
 		if err := srv.run(); err != nil {
 			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+			state.kill()
 			os.Exit(1)
 		}
 	}()
@@ -180,8 +278,13 @@ func main() {
 	select {
 	case <-sig:
 		state.kill()
-	case <-exitCh:
-		// qwen already exited — nothing more to do
+	case err := <-exitCh:
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\nQwen process exited with error: %v\n", err)
+			os.Exit(1)
+		} else {
+			fmt.Fprintln(os.Stderr, "\nQwen process exited successfully.")
+		}
 	}
 	os.Exit(0)
 }

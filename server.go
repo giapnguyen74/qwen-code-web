@@ -4,8 +4,9 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
+	"net/url"
+	"os"
 	"strings"
 	"sync"
 
@@ -56,34 +57,83 @@ func (h *hub) broadcast(msg []byte) {
 type serverConfig struct {
 	host       string
 	port       int
+	origins    []string
 	projectDir string
 	eventsPath string
 	inputPath  string
 }
 
-type Server struct {
-	cfg    serverConfig
-	state  *State
-	tailer *Tailer
-	hub    *hub
+type inputJob struct {
+	data   any
+	respCh chan error
 }
 
-var wsUpgrader = websocket.Upgrader{
-	CheckOrigin:     func(r *http.Request) bool { return true },
-	ReadBufferSize:  1024,
-	WriteBufferSize: 4096,
+type Server struct {
+	cfg        serverConfig
+	state      *State
+	tailer     *Tailer
+	hub        *hub
+	upgrader   websocket.Upgrader
+	inputQueue chan inputJob
 }
 
 func newServer(cfg serverConfig, state *State) *Server {
+	upgrader := websocket.Upgrader{
+		ReadBufferSize:  1024,
+		WriteBufferSize: 4096,
+	}
+
+	if len(cfg.origins) > 0 {
+		upgrader.CheckOrigin = func(r *http.Request) bool {
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				return true
+			}
+			for _, allowed := range cfg.origins {
+				if strings.EqualFold(origin, allowed) {
+					return true
+				}
+			}
+			if strings.HasPrefix(origin, "http://localhost") || strings.HasPrefix(origin, "http://127.0.0.1") {
+				return true
+			}
+			return false
+		}
+	} else {
+		// Default secure check matching the Host header, always allowing local development
+		upgrader.CheckOrigin = func(r *http.Request) bool {
+			origin := r.Header.Get("Origin")
+			if origin == "" {
+				return true
+			}
+			u, err := url.Parse(origin)
+			if err != nil {
+				return false
+			}
+			if strings.EqualFold(u.Host, r.Host) {
+				return true
+			}
+			if strings.HasPrefix(origin, "http://localhost") || strings.HasPrefix(origin, "http://127.0.0.1") {
+				return true
+			}
+			return false
+		}
+	}
+
 	return &Server{
-		cfg:    cfg,
-		state:  state,
-		tailer: newTailer(cfg.eventsPath),
-		hub:    newHub(),
+		cfg:        cfg,
+		state:      state,
+		tailer:     newTailer(cfg.eventsPath),
+		hub:        newHub(),
+		upgrader:   upgrader,
+		inputQueue: make(chan inputJob, 1024),
 	}
 }
 
 func (s *Server) run() error {
+	// Start sequential input writer worker
+	go s.inputWorker()
+
 	// Process live events: update state + broadcast to WS clients
 	go func() {
 		for raw := range s.tailer.Events {
@@ -101,7 +151,17 @@ func (s *Server) run() error {
 	mux.HandleFunc("/events", s.handleWS)
 
 	addr := fmt.Sprintf("%s:%d", s.cfg.host, s.cfg.port)
-	return http.ListenAndServe(addr, mux)
+	fmt.Fprintf(os.Stderr, "  [server] HTTP Server starting to listen on %s...\n", addr)
+	err := http.ListenAndServe(addr, mux)
+	fmt.Fprintf(os.Stderr, "  [server] HTTP Server stopped: %v\n", err)
+	return err
+}
+
+func (s *Server) inputWorker() {
+	for job := range s.inputQueue {
+		err := appendInput(s.cfg.inputPath, job.data)
+		job.respCh <- err
+	}
 }
 
 // onLiveEvent inspects a live event for session lifecycle changes,
@@ -168,10 +228,15 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusConflict, "session is stopped")
 		return
 	}
-	if err := appendInput(s.cfg.inputPath, map[string]any{
-		"type": "submit",
-		"text": strings.TrimSpace(body.Text),
-	}); err != nil {
+	respCh := make(chan error, 1)
+	s.inputQueue <- inputJob{
+		data: map[string]any{
+			"type": "submit",
+			"text": strings.TrimSpace(body.Text),
+		},
+		respCh: respCh,
+	}
+	if err := <-respCh; err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -191,11 +256,16 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "requestId and allowed are required")
 		return
 	}
-	if err := appendInput(s.cfg.inputPath, map[string]any{
-		"type":       "confirmation_response",
-		"request_id": body.RequestID,
-		"allowed":    *body.Allowed,
-	}); err != nil {
+	respCh := make(chan error, 1)
+	s.inputQueue <- inputJob{
+		data: map[string]any{
+			"type":       "confirmation_response",
+			"request_id": body.RequestID,
+			"allowed":    *body.Allowed,
+		},
+		respCh: respCh,
+	}
+	if err := <-respCh; err != nil {
 		writeError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
@@ -214,7 +284,7 @@ func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
 // ── WebSocket handler ─────────────────────────────────────────────────────
 
 func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
-	conn, err := wsUpgrader.Upgrade(w, r, nil)
+	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
@@ -327,5 +397,4 @@ func mustMarshalRaw(v any) []byte {
 	return b
 }
 
-// satisfy unused import if needed
-var _ = io.Discard
+

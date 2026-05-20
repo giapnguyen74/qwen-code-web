@@ -79,11 +79,31 @@ qwen-code-web --host 0.0.0.0 --port 4000
 qwen-code-web --project-dir ~/other-project
 ```
 
-`qwen-code-web` claims `--project-dir`, `--port`, and `--host`. Everything behind `--` is forwarded to `qwen` verbatim. Run `qwen --help` to see qwen's own flags.
+`qwen-code-web` claims `--project-dir`, `--port`, `--host`, and `--origins`. Everything behind `--` is forwarded to `qwen` verbatim. Run `qwen --help` to see qwen's own flags.
 
 The project folder is created (with `git init`) if it does not exist.
 
 On launch, qwen's TUI renders in your terminal as normal (dual-output mode). The web UI at `http://<your-ip>:4000` streams the same session simultaneously — useful for remote access.
+
+## Configuration File
+
+You can set persistent configuration options by creating a `settings.json` file in `~/.qwen-code-web/settings.json`.
+
+We provide a [settings.sample.json](file:///Users/lap16303-local/qwen-code-web/settings.sample.json) file in the root of the repository as a starting template.
+
+Supported options:
+- `host` (string): Listen address (e.g. `"0.0.0.0"` or `"127.0.0.1"`)
+- `port` (number): HTTP server port (e.g. `4000`)
+- `origins` (array of strings): Allowed WebSocket origins (e.g. `["http://your-remote-host:4000"]`). Must match the browser's address. Wildcards (`*`) are not supported for safety.
+- `qwenArgs` (array of strings): Custom arguments to pass to the `qwen` executable automatically
+
+Command-line flags will always take precedence over configurations in `settings.json`.
+
+> [!IMPORTANT]
+> **WebSocket Allowed Origins Security:**
+> By default, `qwen-code-web` enforces strict same-origin verification (comparing the browser `Origin` and server `Host` headers) to protect your session.
+> 
+> Wildcards (`"*"`) are **not supported**. If you access this server remotely via a custom domain name or remote IP address, you **must** configure your specific host origin in the `origins` array (e.g. `["http://192.168.1.50:4000"]` or `["http://my-domain.local:4000"]`) to pass security validation. Local developer setups on `localhost` or `127.0.0.1` are always allowed automatically.
 
 ## Session files
 

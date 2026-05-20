@@ -191,6 +191,7 @@ func resolveQwen() (string, error) {
 		}
 		// common fixed locations
 		for _, loc := range []string{
+			"/opt/homebrew/bin/qwen",
 			"/usr/local/bin/qwen",
 			filepath.Join(home, ".local", "bin", "qwen"),
 		} {

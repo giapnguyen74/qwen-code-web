@@ -51,6 +51,25 @@
       min-height: 48px;
     }
 
+    #origin-warning {
+      background: rgba(247, 118, 142, 0.1);
+      border-bottom: 1px solid rgba(247, 118, 142, 0.3);
+      color: #f7768e;
+      padding: 10px 20px;
+      font-size: 13px;
+      text-align: center;
+      flex-shrink: 0;
+      line-height: 1.5;
+    }
+    #origin-warning code {
+      font-family: var(--font-mono);
+      background: rgba(247, 118, 142, 0.15);
+      padding: 2px 6px;
+      border-radius: 4px;
+      color: #ff9e64;
+      font-size: 12px;
+    }
+
     #header-logo {
       font-size: 13px;
       font-weight: 700;
@@ -419,18 +438,30 @@
     }
     #sending-label.show { display: block; }
 
-    /* ── Working indicator ────────────────────────────────────────────────── */
-    #working-indicator {
-      display: none;
-      align-items: center;
-      gap: 5px;
-      font-size: 12px;
-      color: var(--yellow);
-      white-space: nowrap;
+    /* ── Working indicator row ────────────────────────────────────────── */
+    .working-row {
+      animation: fadeIn 0.2s ease-out;
     }
-    #working-indicator.show { display: flex; }
-    #working-spinner { font-size: 14px; line-height: 1; }
-    #working-elapsed { color: var(--text-muted); font-size: 11px; }
+    .working-body {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      color: var(--yellow);
+      font-size: 13px;
+    }
+    .working-spinner-inline {
+      font-family: var(--font-mono);
+      font-size: 15px;
+      font-weight: 700;
+    }
+    .working-elapsed-inline {
+      color: var(--text-muted);
+      font-size: 11px;
+    }
+    @keyframes fadeIn {
+      from { opacity: 0; transform: translateY(4px); }
+      to { opacity: 1; transform: translateY(0); }
+    }
 
     /* ── Mobile responsive ──────────────────────────────────────────────── */
     @media (max-width: 600px) {
@@ -446,8 +477,6 @@
 
       /* Shrink right-side controls */
       #header-right { gap: 7px; }
-      #working-label { display: none; }          /* just show spinner + time */
-      #working-elapsed { font-size: 10px; }
       #status-badge { font-size: 10px; padding: 2px 7px; }
       #stop-btn { padding: 3px 8px; font-size: 11px; min-height: 30px; }
 
@@ -507,14 +536,14 @@
   <span id="header-sep">/</span>
   <span id="project-name">—</span>
   <div id="header-right">
-    <div id="working-indicator">
-      <span id="working-spinner">⠻</span>
-      <span id="working-label">Working...</span>
-      <span id="working-elapsed"></span>
-    </div>
     <span id="status-badge" class="starting">● starting</span>
     <button id="stop-btn">stop</button>
   </div>
+</div>
+
+<div id="origin-warning" style="display: none;">
+  <strong>WebSocket Connection Failed.</strong> If you are accessing this server via a remote IP or domain, the connection may be blocked by same-origin security.<br>
+  Please configure your origin in <code>~/.qwen-code-web/settings.json</code> (e.g. <code>"origins": ["<span class="warning-origin-url"></span>"]</code>) or launch with <code>--origins <span class="warning-origin-url"></span></code>.
 </div>
 
 <div id="conversation"></div>
@@ -568,9 +597,7 @@ const stopBtn         = document.getElementById('stop-btn');
 const statusBadge     = document.getElementById('status-badge');
 const projectNameEl   = document.getElementById('project-name');
 const sendingLabel    = document.getElementById('sending-label');
-const workingIndicator = document.getElementById('working-indicator');
-const workingSpinner   = document.getElementById('working-spinner');
-const workingElapsedEl = document.getElementById('working-elapsed');
+let workingRow = null;
 
 // ── Working spinner ───────────────────────────────────────────────────────
 const SPINNER_FRAMES = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
@@ -588,19 +615,43 @@ function startWorking() {
   if (workingTimer) return; // already running
   workingStart = Date.now();
   spinnerIdx = 0;
-  workingSpinner.textContent = SPINNER_FRAMES[0];
-  workingElapsedEl.textContent = '(0s)';
-  workingIndicator.classList.add('show');
+
+  workingRow = document.createElement('div');
+  workingRow.className = 'msg-row working-row';
+  workingRow.innerHTML = `
+    <div class="msg-label assistant">Qwen</div>
+    <div class="msg-body working-body">
+      <span class="working-spinner-inline">${SPINNER_FRAMES[0]}</span>
+      <span>Working...</span>
+      <span class="working-elapsed-inline">(0s)</span>
+    </div>
+  `;
+  conversationEl.appendChild(workingRow);
+  scrollToBottom();
+
+  const spinnerEl = workingRow.querySelector('.working-spinner-inline');
+  const elapsedEl = workingRow.querySelector('.working-elapsed-inline');
+
   workingTimer = setInterval(() => {
-    workingSpinner.textContent = SPINNER_FRAMES[spinnerIdx++ % SPINNER_FRAMES.length];
-    workingElapsedEl.textContent = formatElapsed(Date.now() - workingStart);
+    if (spinnerEl) {
+      spinnerEl.textContent = SPINNER_FRAMES[spinnerIdx++ % SPINNER_FRAMES.length];
+    }
+    if (elapsedEl) {
+      elapsedEl.textContent = formatElapsed(Date.now() - workingStart);
+    }
   }, 100);
 }
 
 function stopWorking() {
-  if (workingTimer) { clearInterval(workingTimer); workingTimer = null; }
+  if (workingTimer) {
+    clearInterval(workingTimer);
+    workingTimer = null;
+  }
   workingStart = null;
-  workingIndicator.classList.remove('show');
+  if (workingRow) {
+    workingRow.remove();
+    workingRow = null;
+  }
 }
 
 // ── State ─────────────────────────────────────────────────────────────────
@@ -924,10 +975,34 @@ function handleQwenEvent(ev) {
 }
 
 // ── WebSocket ─────────────────────────────────────────────────────────────
+let reconnectDelay = 2000;
+let isWsConnected = false;
+
+function updateWSWarningVisibility() {
+  const originWarningEl = document.getElementById('origin-warning');
+  const warningOriginUrls = document.querySelectorAll('.warning-origin-url');
+  warningOriginUrls.forEach(el => el.textContent = location.origin);
+
+  const isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+  if (!isWsConnected && !isLocalhost) {
+    originWarningEl.style.display = 'block';
+  } else {
+    originWarningEl.style.display = 'none';
+  }
+}
+
+// Initial visibility check
+updateWSWarningVisibility();
+
 function connect() {
   const ws = new WebSocket(WS_URL);
 
-  ws.onopen = () => console.log('[ws] connected');
+  ws.onopen = () => {
+    console.log('[ws] connected');
+    reconnectDelay = 2000; // reset delay on successful connection
+    isWsConnected = true;
+    updateWSWarningVisibility();
+  };
 
   ws.onmessage = (e) => {
     let msg;
@@ -941,6 +1016,7 @@ function connect() {
     if (msg.type === 'replay_start') {
       // Clear conversation and reset streaming state before replay
       isReplaying = true;
+      stopWorking();
       conversationEl.innerHTML = '';
       streamingRow  = null;
       streamingBody = null;
@@ -960,11 +1036,20 @@ function connect() {
   };
 
   ws.onclose = () => {
-    console.log('[ws] disconnected — reconnecting in 2s…');
-    setTimeout(connect, 2000);
+    console.log(`[ws] disconnected — reconnecting in ${reconnectDelay / 1000}s…`);
+    isWsConnected = false;
+    updateWSWarningVisibility();
+    setTimeout(() => {
+      reconnectDelay = Math.min(reconnectDelay * 1.5, 30000);
+      connect();
+    }, reconnectDelay);
   };
 
-  ws.onerror = (err) => console.error('[ws] error', err);
+  ws.onerror = (err) => {
+    console.error('[ws] error', err);
+    isWsConnected = false;
+    updateWSWarningVisibility();
+  };
 }
 
 connect();
