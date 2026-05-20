@@ -1,4 +1,4 @@
-module github.com/YOUR_USER/qwen-code-web
+module github.com/giapnguyen74/qwen-code-web
 
 go 1.22.0
 

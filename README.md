@@ -4,28 +4,7 @@ A browser UI for [Qwen Code](https://github.com/QwenLM/qwen-code) TUI sessions.
 
 Run one command, open a browser tab, and operate Qwen Code from a clean chat interface — streaming output, tool approval cards, session history — without touching the terminal again. Works in dual-output mode: the TUI stays live in your local terminal while the web UI streams the same session to any browser on the network.
 
-```
-┌─────────────────────────────────────────────────┐
-│  qwen-code-web  /  my-project  •  ● running     │
-├─────────────────────────────────────────────────┤
-│                                                 │
-│  You                                            │
-│    Fix the failing auth tests                   │
-│                                                 │
-│  Qwen                                           │
-│    I'll start by reading the test output...     │
-│    ▊                                            │
-│                                                 │
-│  ┌─ Tool request ──────────────────────────┐   │
-│  │  run_shell_command                       │   │
-│  │  npm test                                │   │
-│  │                          [Allow] [Deny]  │   │
-│  └──────────────────────────────────────────┘   │
-│                                                 │
-├─────────────────────────────────────────────────┤
-│  Message…                               [Send]  │
-└─────────────────────────────────────────────────┘
-```
+![qwen-code-web Screenshot](assets/Screenshot.jpg)
 
 ## How it works
 
@@ -46,7 +25,7 @@ No C compiler, no npm, no node-gyp. The Go binary is fully self-contained.
 To install `qwen-code-web`, clone the repository and compile the binary:
 
 ```bash
-git clone https://github.com/YOUR_USER/qwen-code-web.git
+git clone https://github.com/giapnguyen74/qwen-code-web.git
 cd qwen-code-web
 go build -ldflags="-s -w" -o qwen-code-web .
 ```
@@ -122,7 +101,7 @@ Each project directory gets its own slot, keyed by its absolute path. Renaming o
 ## Development
 
 ```bash
-git clone https://github.com/YOUR_USER/qwen-code-web.git
+git clone https://github.com/giapnguyen74/qwen-code-web.git
 cd qwen-code-web
 go run . --project-dir ~/your-project
 ```
