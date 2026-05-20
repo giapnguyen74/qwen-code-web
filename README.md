@@ -2,7 +2,7 @@
 
 A browser UI for [Qwen Code](https://github.com/QwenLM/qwen-code) TUI sessions.
 
-Run one command, open a browser tab, and operate Qwen Code from a clean chat interface — streaming output, tool approval cards, session history, and resume support — without touching the terminal again.
+Run one command, open a browser tab, and operate Qwen Code from a clean chat interface — streaming output, tool approval cards, session history — without touching the terminal again. Works in dual-output mode: the TUI stays live in your local terminal while the web UI streams the same session to any browser on the network.
 
 ```
 ┌─────────────────────────────────────────────────┐
@@ -66,18 +66,24 @@ qwen-code-web -- -c          # continue qwen's own last conversation
 qwen-code-web -- -y          # auto-approve all tool calls
 qwen-code-web --port 4000 -- -y -c
 
-# Custom port (default: 5000)
-qwen-code-web --port 4000
+# Custom port (default: 4000)
+qwen-code-web --port 8080
+
+# Bind to a specific interface only (default is 0.0.0.0 — all interfaces)
+qwen-code-web --host 127.0.0.1
+
+# Bind to all interfaces (for network/remote access)
+qwen-code-web --host 0.0.0.0 --port 4000
 
 # Explicit project directory (overrides cwd)
 qwen-code-web --project-dir ~/other-project
 ```
 
-`qwen-code-web` claims `--project-dir` and `--port`. Everything behind `--` is forwarded to `qwen` verbatim. Run `qwen --help` to see qwen's own flags.
+`qwen-code-web` claims `--project-dir`, `--port`, and `--host`. Everything behind `--` is forwarded to `qwen` verbatim. Run `qwen --help` to see qwen's own flags.
 
 The project folder is created (with `git init`) if it does not exist.
 
-On launch the browser opens automatically. If it doesn't, visit `http://localhost:5000`.
+On launch, qwen's TUI renders in your terminal as normal (dual-output mode). The web UI at `http://<your-ip>:4000` streams the same session simultaneously — useful for remote access.
 
 ## Session files
 

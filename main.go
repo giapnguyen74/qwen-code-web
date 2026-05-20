@@ -3,10 +3,8 @@ package main
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"os/signal"
 	"path/filepath"
-	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -15,16 +13,16 @@ import (
 // cliOpts holds our own flags; everything else is forwarded to qwen.
 type cliOpts struct {
 	projectDir string // defaults to cwd
+	host       string
 	port       int
-	resume     bool
 	qwenArgs   []string // passed through verbatim to qwen
 }
 
 // parseArgs splits os.Args into our flags and qwen's flags.
-// We claim: --project-dir, --port, --resume (and their -short forms).
+// We claim: --project-dir, --port, --host (and their -short forms).
 // Everything else (e.g. -c, -y, --model) is forwarded to qwen unchanged.
 func parseArgs() cliOpts {
-	opts := cliOpts{port: 5000}
+	opts := cliOpts{host: "0.0.0.0", port: 4000}
 	args := os.Args[1:]
 
 	for i := 0; i < len(args); i++ {
@@ -39,6 +37,10 @@ func parseArgs() cliOpts {
 			opts.projectDir = v
 			continue
 		}
+		if v, ok := cutPrefix(arg, "--host="); ok {
+			opts.host = v
+			continue
+		}
 
 		switch arg {
 		case "--port", "-port":
@@ -51,8 +53,11 @@ func parseArgs() cliOpts {
 				i++
 				opts.projectDir = args[i]
 			}
-		case "--resume", "-resume":
-			opts.resume = true
+		case "--host", "-host":
+			if i+1 < len(args) {
+				i++
+				opts.host = args[i]
+			}
 		case "--help", "-h", "-help":
 			printHelp()
 			os.Exit(0)
@@ -76,7 +81,8 @@ func printHelp() {
 
 Our flags (consumed by qwen-code-web):
   --project-dir <path>   Project directory  (default: current directory)
-  --port <n>             HTTP server port   (default: 5000)
+  --port <n>             HTTP server port   (default: 4000)
+  --host <addr>          Listen address     (default: 0.0.0.0 — all interfaces)
 
 Everything behind -- is forwarded to qwen:
   -c, -y, --model, ...   See: qwen --help
@@ -85,7 +91,7 @@ Examples:
   cd ~/my-project && qwen-code-web
   qwen-code-web --project-dir ~/my-project
   qwen-code-web -- -c
-  qwen-code-web --port 4000 -- -y
+  qwen-code-web --port 8080 --host 0.0.0.0 -- -y
 `)
 }
 
@@ -118,8 +124,16 @@ func main() {
 	os.WriteFile(sf.eventsPath, nil, 0o600) //nolint:errcheck
 	os.WriteFile(sf.inputPath, nil, 0o600)  //nolint:errcheck
 
-	// ── Spawn qwen ───────────────────────────────────────────────────────
-	fmt.Printf("Starting Qwen Code in: %s\n", projectDir)
+	// ── Print web UI address now — qwen will claim the terminal next ─────────
+	displayHost := opts.host
+	if displayHost == "0.0.0.0" {
+		displayHost = "localhost"
+	}
+	url := fmt.Sprintf("http://%s:%d", displayHost, opts.port)
+	fmt.Fprintf(os.Stderr, "\n  Web UI → %s\n\n", url)
+
+	// ── Spawn qwen (claims stdin/stdout/stderr) ───────────────────────────
+	fmt.Fprintf(os.Stderr, "Starting Qwen Code in: %s\n", projectDir)
 	proc, err := spawnQwen(spawnOptions{
 		projectDir: projectDir,
 		eventsPath: sf.eventsPath,
@@ -135,14 +149,17 @@ func main() {
 	state := newState()
 	state.setProcess(proc)
 
+	// exitCh is closed when qwen exits (naturally or via signal).
+	exitCh := make(chan struct{})
 	go func() {
 		proc.cmd.Wait() //nolint:errcheck
 		state.setStopped()
-		fmt.Println("\nQwen Code exited")
+		close(exitCh)
 	}()
 
-	// ── Server ───────────────────────────────────────────────────────────
+	// ── Server (runs silently in the background, no TTY needed) ──────────
 	srv := newServer(serverConfig{
+		host:       opts.host,
 		port:       opts.port,
 		projectDir: projectDir,
 		eventsPath: sf.eventsPath,
@@ -151,34 +168,22 @@ func main() {
 
 	go func() {
 		if err := srv.run(); err != nil {
-			fatalf("server: %v", err)
+			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
+			os.Exit(1)
 		}
 	}()
 
-	url := fmt.Sprintf("http://localhost:%d", opts.port)
-	fmt.Printf("\n  qwen-code-web  →  %s\n\n", url)
-	openBrowser(url)
-
-	// ── Graceful shutdown ────────────────────────────────────────────────
+	// ── Graceful shutdown ─────────────────────────────────────────────────
+	// Exit when qwen exits naturally OR when we receive SIGTERM/SIGINT.
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
-	<-sig
-	fmt.Println("\nShutting down...")
-	state.kill()
-	os.Exit(0)
-}
-
-func openBrowser(url string) {
-	var cmd string
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = "open"
-	case "windows":
-		cmd = "start"
-	default:
-		cmd = "xdg-open"
+	select {
+	case <-sig:
+		state.kill()
+	case <-exitCh:
+		// qwen already exited — nothing more to do
 	}
-	exec.Command(cmd, url).Start() //nolint:errcheck
+	os.Exit(0)
 }
 
 func fatalf(format string, args ...any) {

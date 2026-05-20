@@ -9,8 +9,6 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
-
-	"github.com/creack/pty"
 )
 
 // ── Session files ─────────────────────────────────────────────────────────
@@ -112,8 +110,7 @@ type spawnOptions struct {
 }
 
 type qwenProc struct {
-	cmd  *exec.Cmd
-	ptmx *os.File
+	cmd *exec.Cmd
 }
 
 // State holds runtime session state, safe for concurrent access.
@@ -153,9 +150,6 @@ func (s *State) kill() {
 	if s.proc == nil {
 		return
 	}
-	if s.proc.ptmx != nil {
-		s.proc.ptmx.Close()
-	}
 	if s.proc.cmd != nil && s.proc.cmd.Process != nil {
 		s.proc.cmd.Process.Kill() //nolint:errcheck
 	}
@@ -164,12 +158,14 @@ func (s *State) kill() {
 // resolveQwen finds the qwen binary path.
 // It uses "which qwen" first, then exec.LookPath, and finally falls back to common paths.
 func resolveQwen() (string, error) {
-	// 1. Try running "which qwen" to see if we can resolve it directly
-	cmd := exec.Command("which", "qwen")
-	if out, err := cmd.CombinedOutput(); err == nil {
-		path := strings.TrimSpace(string(out))
-		if path != "" && isExec(path) {
-			return path, nil
+	// 1. Try running "which qwen" inside login shells (very robust on macOS/Linux)
+	for _, shell := range []string{"zsh", "bash"} {
+		cmd := exec.Command(shell, "-l", "-c", "which qwen")
+		if out, err := cmd.CombinedOutput(); err == nil {
+			path := strings.TrimSpace(string(out))
+			if path != "" && isExec(path) {
+				return path, nil
+			}
 		}
 	}
 
@@ -212,33 +208,109 @@ func isExec(path string) bool {
 	return err == nil && !info.IsDir() && info.Mode()&0o111 != 0
 }
 
+func isNodeScript(path string) bool {
+	f, err := os.Open(path)
+	if err != nil {
+		return false
+	}
+	defer f.Close()
+
+	var buf [256]byte
+	n, err := f.Read(buf[:])
+	if err != nil && err != io.EOF {
+		return false
+	}
+	content := string(buf[:n])
+	if strings.HasPrefix(content, "#!") {
+		firstLine := content
+		if idx := strings.Index(content, "\n"); idx >= 0 {
+			firstLine = content[:idx]
+		}
+		return strings.Contains(firstLine, "node")
+	}
+	return false
+}
+
+func resolveNode() (string, error) {
+	// 1. Try running "which node" inside login shells (very robust on macOS/Linux)
+	for _, shell := range []string{"zsh", "bash"} {
+		cmd := exec.Command(shell, "-l", "-c", "which node")
+		if out, err := cmd.CombinedOutput(); err == nil {
+			path := strings.TrimSpace(string(out))
+			if path != "" && isExec(path) {
+				return path, nil
+			}
+		}
+	}
+
+	// 2. Try exec.LookPath("node")
+	if path, err := exec.LookPath("node"); err == nil {
+		return path, nil
+	}
+
+	// 3. Fallback to NVM or other common paths
+	if home, err := os.UserHomeDir(); err == nil {
+		nvmDir := os.Getenv("NVM_DIR")
+		if nvmDir == "" {
+			nvmDir = filepath.Join(home, ".nvm")
+		}
+		versionsDir := filepath.Join(nvmDir, "versions", "node")
+		if entries, err := os.ReadDir(versionsDir); err == nil {
+			for _, entry := range entries {
+				candidate := filepath.Join(versionsDir, entry.Name(), "bin", "node")
+				if isExec(candidate) {
+					return candidate, nil
+				}
+			}
+		}
+	}
+
+	return "", fmt.Errorf("node not found")
+}
+
 func spawnQwen(opts spawnOptions) (*qwenProc, error) {
 	qwenBin, err := resolveQwen()
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("Using qwen: %s\n", qwenBin)
+	fmt.Fprintf(os.Stderr, "Using qwen: %s\n", qwenBin)
 
 	args := []string{
 		"--json-file", opts.eventsPath,
 		"--input-file", opts.inputPath,
 	}
-	// Append any extra args the user passed (e.g. -c, -y, --model)
 	args = append(args, opts.extraArgs...)
 
-	cmd := exec.Command(qwenBin, args...)
+	var cmd *exec.Cmd
+	if isNodeScript(qwenBin) {
+		nodeBin, err := resolveNode()
+		if err == nil {
+			fmt.Fprintf(os.Stderr, "Detected Node.js script. Spawning via node: %s\n", nodeBin)
+			nodeArgs := append([]string{qwenBin}, args...)
+			cmd = exec.Command(nodeBin, nodeArgs...)
+		} else {
+			fmt.Fprintf(os.Stderr, "Detected Node.js script but node not found: %v. Spawning directly.\n", err)
+			cmd = exec.Command(qwenBin, args...)
+		}
+	} else {
+		cmd = exec.Command(qwenBin, args...)
+	}
+
 	cmd.Dir = opts.projectDir
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 
-	ptmx, err := pty.StartWithSize(cmd, &pty.Winsize{Rows: 50, Cols: 220})
-	if err != nil {
-		return nil, fmt.Errorf("pty.Start: %w", err)
+	// Give qwen full ownership of the real terminal so its TUI renders natively.
+	// Structured events are captured via --json-file; the web server reads that
+	// file independently and does not touch the terminal at all.
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+
+	if err := cmd.Start(); err != nil {
+		return nil, fmt.Errorf("cmd.Start: %w", err)
 	}
 
-	// Drain PTY stdout — structured output comes via events.jsonl.
-	go io.Copy(io.Discard, ptmx) //nolint:errcheck
-
-	return &qwenProc{cmd: cmd, ptmx: ptmx}, nil
+	return &qwenProc{cmd: cmd}, nil
 }
 
 // appendInput appends one JSONL command to the qwen input file.

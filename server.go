@@ -54,6 +54,7 @@ func (h *hub) broadcast(msg []byte) {
 // ── Server ────────────────────────────────────────────────────────────────
 
 type serverConfig struct {
+	host       string
 	port       int
 	projectDir string
 	eventsPath string
@@ -99,7 +100,7 @@ func (s *Server) run() error {
 	mux.HandleFunc("/stop", s.handleStop)
 	mux.HandleFunc("/events", s.handleWS)
 
-	addr := fmt.Sprintf("127.0.0.1:%d", s.cfg.port)
+	addr := fmt.Sprintf("%s:%d", s.cfg.host, s.cfg.port)
 	return http.ListenAndServe(addr, mux)
 }
 
