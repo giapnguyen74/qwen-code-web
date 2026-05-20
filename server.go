@@ -4,6 +4,7 @@ import (
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -77,47 +78,64 @@ type Server struct {
 	inputQueue chan inputJob
 }
 
+func isLocalOrigin(origin string) bool {
+	u, err := url.Parse(origin)
+	if err != nil {
+		return false
+	}
+	host := u.Host
+	if h, _, err := net.SplitHostPort(u.Host); err == nil {
+		host = h
+	}
+	// Strip square brackets from IPv6 host if present
+	hostClean := strings.Trim(host, "[]")
+	return strings.EqualFold(host, "localhost") || host == "127.0.0.1" || hostClean == "::1"
+}
+
+func checkOrigin(origin string, allowedOrigins []string) bool {
+	if origin == "" {
+		return true
+	}
+
+	// Local loopback is ALWAYS allowed (localhost, 127.0.0.1, [::1])
+	if isLocalOrigin(origin) {
+		return true
+	}
+
+	// If it is a remote origin, it MUST match one of the explicitly allowed origins
+	if len(allowedOrigins) > 0 {
+		u, err := url.Parse(origin)
+		if err != nil {
+			return false
+		}
+		host := u.Host
+		if h, _, err := net.SplitHostPort(u.Host); err == nil {
+			host = h
+		}
+		for _, allowed := range allowedOrigins {
+			if strings.EqualFold(origin, allowed) {
+				return true
+			}
+			if strings.EqualFold(u.Host, allowed) {
+				return true
+			}
+			if strings.EqualFold(host, allowed) {
+				return true
+			}
+		}
+	}
+
+	return false
+}
+
 func newServer(cfg serverConfig, state *State) *Server {
 	upgrader := websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 4096,
-	}
-
-	if len(cfg.origins) > 0 {
-		upgrader.CheckOrigin = func(r *http.Request) bool {
+		CheckOrigin: func(r *http.Request) bool {
 			origin := r.Header.Get("Origin")
-			if origin == "" {
-				return true
-			}
-			for _, allowed := range cfg.origins {
-				if strings.EqualFold(origin, allowed) {
-					return true
-				}
-			}
-			if strings.HasPrefix(origin, "http://localhost") || strings.HasPrefix(origin, "http://127.0.0.1") {
-				return true
-			}
-			return false
-		}
-	} else {
-		// Default secure check matching the Host header, always allowing local development
-		upgrader.CheckOrigin = func(r *http.Request) bool {
-			origin := r.Header.Get("Origin")
-			if origin == "" {
-				return true
-			}
-			u, err := url.Parse(origin)
-			if err != nil {
-				return false
-			}
-			if strings.EqualFold(u.Host, r.Host) {
-				return true
-			}
-			if strings.HasPrefix(origin, "http://localhost") || strings.HasPrefix(origin, "http://127.0.0.1") {
-				return true
-			}
-			return false
-		}
+			return checkOrigin(origin, cfg.origins)
+		},
 	}
 
 	return &Server{
