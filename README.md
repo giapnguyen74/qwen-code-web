@@ -41,21 +41,17 @@ The Qwen Code process and all session files stay on your machine. Nothing is sen
 
 No C compiler, no npm, no node-gyp. The Go binary is fully self-contained.
 
-## Install
+## Build and Install
+
+To install `qwen-code-web`, clone the repository and compile the binary:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/YOUR_USER/qwen-code-web/main/install.sh | bash
+git clone https://github.com/YOUR_USER/qwen-code-web.git
+cd qwen-code-web
+go build -ldflags="-s -w" -o qwen-code-web .
 ```
 
-This clones the repo to `~/.local/share/qwen-code-web`, runs `go build`, and puts a single `qwen-code-web` binary in `~/.local/bin`. Running the same command again upgrades to the latest version.
-
-### Override defaults
-
-```bash
-QWEN_WEB_REPO=https://github.com/fork/qwen-code-web.git \
-QWEN_WEB_DIR=/opt/qwen-code-web \
-  curl -fsSL .../install.sh | bash
-```
+Move the compiled `qwen-code-web` binary into your standard path (e.g. `/usr/local/bin` or `~/.local/bin`) to run it from anywhere.
 
 ## Usage
 
@@ -65,27 +61,23 @@ cd ~/my-project
 # Start a fresh session
 qwen-code-web
 
-# Resume the last session (restores conversation history in browser)
-qwen-code-web --resume
+# Pass any qwen flags behind the -- separator
+qwen-code-web -- -c          # continue qwen's own last conversation
+qwen-code-web -- -y          # auto-approve all tool calls
+qwen-code-web --port 4000 -- -y -c
 
-# Pass any qwen flags straight through — they reach qwen unchanged
-qwen-code-web -c          # continue qwen's own last conversation
-qwen-code-web -y          # auto-approve all tool calls
-qwen-code-web --resume -c -y
-
-# Custom port (default: 3000)
+# Custom port (default: 5000)
 qwen-code-web --port 4000
 
 # Explicit project directory (overrides cwd)
 qwen-code-web --project-dir ~/other-project
 ```
 
-`qwen-code-web` claims `--project-dir`, `--port`, and `--resume`. Every other
-flag is forwarded to `qwen` verbatim. Run `qwen --help` to see qwen's own flags.
+`qwen-code-web` claims `--project-dir` and `--port`. Everything behind `--` is forwarded to `qwen` verbatim. Run `qwen --help` to see qwen's own flags.
 
 The project folder is created (with `git init`) if it does not exist.
 
-On launch the browser opens automatically. If it doesn't, visit `http://localhost:3000`.
+On launch the browser opens automatically. If it doesn't, visit `http://localhost:5000`.
 
 ## Session files
 
@@ -96,11 +88,10 @@ Session data lives in `~/.qwen-code-web/`, outside your project — nothing is w
 └── sessions/
     └── my-project_a1b2c3d4/   ← project name + 8-char path hash
         ├── events.jsonl        ← Qwen Code writes structured events here
-        ├── input.jsonl         ← server writes your messages and approvals here
-        └── last-session-id     ← written on session_start, read by --resume
+        └── input.jsonl         ← server writes your messages and approvals here
 ```
 
-Each project directory gets its own slot, keyed by its absolute path. Renaming or moving a project starts a new slot (old history stays in the old slot).
+Each project directory gets its own slot, keyed by its absolute path. Renaming or moving a project starts a new slot.
 
 ## Development
 
@@ -127,14 +118,12 @@ GOOS=darwin GOARCH=arm64 go build -ldflags="-s -w" -o qwen-code-web-darwin-arm64
 
 ```
 main.go        CLI entry point — flags, git init, spawn, server start
-session.go     PTY spawn, session files, qwen/node binary resolution
+session.go     PTY spawn, session files, qwen binary resolution
 tailer.go      Byte-offset JSONL file tailer (50 ms poll)
 server.go      HTTP + WebSocket server, event replay, hub broadcast
 
 public/
   index.html   Single-page browser UI — embedded into binary at build time
-
-install.sh     curl | bash installer (clones repo, go build, PATH setup)
 ```
 
 ## Notes
