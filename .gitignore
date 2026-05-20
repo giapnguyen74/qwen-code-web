@@ -1,0 +1,4 @@
+node_modules/
+dist/
+.qwen-code-web/
+*.log
