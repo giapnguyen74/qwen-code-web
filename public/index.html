@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
   <title>qwen-code-web</title>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/marked/9.1.6/marked.min.js"></script>
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/tokyo-night-dark.min.css">
@@ -33,6 +33,7 @@
       font-size: 14px;
       line-height: 1.6;
       height: 100vh;
+      height: 100dvh;        /* mobile: excludes collapsing browser chrome */
       display: flex;
       flex-direction: column;
       overflow: hidden;
@@ -71,6 +72,7 @@
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
+      min-width: 0; /* allow flex item to shrink below content size */
     }
 
     #header-right {
@@ -429,6 +431,73 @@
     #working-indicator.show { display: flex; }
     #working-spinner { font-size: 14px; line-height: 1; }
     #working-elapsed { color: var(--text-muted); font-size: 11px; }
+
+    /* ── Mobile responsive ──────────────────────────────────────────────── */
+    @media (max-width: 600px) {
+      /* Compact header */
+      #header {
+        padding: 0 12px;
+        gap: 6px;
+        min-height: 44px;
+      }
+      #header-logo { font-size: 11px; letter-spacing: 0; }
+      #header-sep  { display: none; }
+      #project-name { font-size: 10px; }
+
+      /* Shrink right-side controls */
+      #header-right { gap: 7px; }
+      #working-label { display: none; }          /* just show spinner + time */
+      #working-elapsed { font-size: 10px; }
+      #status-badge { font-size: 10px; padding: 2px 7px; }
+      #stop-btn { padding: 3px 8px; font-size: 11px; min-height: 30px; }
+
+      /* Messages */
+      #conversation { padding: 12px 0; }
+      .msg-row    { padding: 5px 12px; }
+      .approval-row { padding: 5px 12px; }
+      .notice     { padding: 8px 12px; font-size: 10px; }
+
+      /* Larger touch targets for tool-card toggle */
+      .tool-card-header { padding: 10px 12px; }
+      .result-card-header { padding: 8px 10px; }
+
+      /* Approval buttons */
+      .btn { padding: 10px 18px; font-size: 14px; min-height: 44px; }
+      .approval-input { max-height: 100px; font-size: 11px; }
+      .approval-actions { gap: 10px; }
+
+      /* Input area — safe-area inset for iPhone home bar */
+      #input-area {
+        padding: 8px 12px;
+        padding-bottom: calc(8px + env(safe-area-inset-bottom, 0px));
+        gap: 8px;
+      }
+
+      /* 16px prevents iOS auto-zoom on input focus */
+      #message-input {
+        font-size: 16px;
+        min-height: 44px;
+        padding: 10px 12px;
+      }
+
+      #send-btn {
+        height: 44px;
+        padding: 0 16px;
+        font-size: 14px;
+        border-radius: 10px;
+      }
+
+      /* Mono / code areas */
+      .md pre { font-size: 11.5px; }
+      .tool-card-body  { font-size: 11px; }
+      .result-card-body { font-size: 11px; max-height: 160px; }
+    }
+
+    /* Extra small phones (< 380px) */
+    @media (max-width: 380px) {
+      #header-logo { display: none; }   /* only project name + controls */
+      #project-name { font-size: 11px; }
+    }
   </style>
 </head>
 <body>
