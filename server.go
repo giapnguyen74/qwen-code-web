@@ -54,11 +54,10 @@ func (h *hub) broadcast(msg []byte) {
 // ── Server ────────────────────────────────────────────────────────────────
 
 type serverConfig struct {
-	port              int
-	projectDir        string
-	eventsPath        string
-	inputPath         string
-	lastSessionIDPath string
+	port       int
+	projectDir string
+	eventsPath string
+	inputPath  string
 }
 
 type Server struct {
@@ -120,7 +119,6 @@ func (s *Server) onLiveEvent(raw json.RawMessage) {
 			case "session_start":
 				if base.Data.SessionID != "" {
 					s.state.setRunning(base.Data.SessionID)
-					saveLastSessionID(s.cfg.lastSessionIDPath, base.Data.SessionID)
 					s.hub.broadcast(s.marshalStatus())
 				}
 			case "session_end":

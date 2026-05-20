@@ -16,10 +16,9 @@ import (
 // ── Session files ─────────────────────────────────────────────────────────
 
 type sessionFiles struct {
-	sessionDir        string
-	eventsPath        string
-	inputPath         string
-	lastSessionIDPath string
+	sessionDir string
+	eventsPath string
+	inputPath  string
 }
 
 func ensureProjectDir(dir string) error {
@@ -87,7 +86,6 @@ func ensureSessionFiles(projectDir string) (sessionFiles, error) {
 
 	ep := filepath.Join(sd, "events.jsonl")
 	ip := filepath.Join(sd, "input.jsonl")
-	lp := filepath.Join(sd, "last-session-id")
 
 	for _, p := range []string{ep, ip} {
 		if _, err := os.Stat(p); os.IsNotExist(err) {
@@ -98,33 +96,19 @@ func ensureSessionFiles(projectDir string) (sessionFiles, error) {
 	}
 
 	return sessionFiles{
-		sessionDir:        sd,
-		eventsPath:        ep,
-		inputPath:         ip,
-		lastSessionIDPath: lp,
+		sessionDir: sd,
+		eventsPath: ep,
+		inputPath:  ip,
 	}, nil
-}
-
-func loadLastSessionID(path string) (string, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(b)), nil
-}
-
-func saveLastSessionID(path, id string) {
-	os.WriteFile(path, []byte(id), 0o600) //nolint:errcheck
 }
 
 // ── Process spawn ─────────────────────────────────────────────────────────
 
 type spawnOptions struct {
-	projectDir      string
-	eventsPath      string
-	inputPath       string
-	resumeSessionID string
-	extraArgs       []string // forwarded verbatim to qwen
+	projectDir string
+	eventsPath string
+	inputPath  string
+	extraArgs  []string // forwarded verbatim to qwen
 }
 
 type qwenProc struct {
@@ -177,74 +161,50 @@ func (s *State) kill() {
 	}
 }
 
-// resolveQwen finds the qwen binary and the node interpreter.
-// Returns (qwenPath, nodePath, error).
-func resolveQwen() (string, string, error) {
-	// ── Find qwen ─────────────────────────────────────────────────────
-	qwenBin, err := exec.LookPath("qwen")
-	if err != nil {
-		// Check nvm locations
-		if home, e := os.UserHomeDir(); e == nil {
-			nvmDir := os.Getenv("NVM_DIR")
-			if nvmDir == "" {
-				nvmDir = filepath.Join(home, ".nvm")
-			}
-			versionsDir := filepath.Join(nvmDir, "versions", "node")
-			if entries, e := os.ReadDir(versionsDir); e == nil {
-				for _, entry := range entries {
-					candidate := filepath.Join(versionsDir, entry.Name(), "bin", "qwen")
-					if isExec(candidate) {
-						qwenBin = candidate
-						break
-					}
-				}
-			}
-			// common fixed locations
-			if qwenBin == "" {
-				for _, loc := range []string{
-					"/usr/local/bin/qwen",
-					filepath.Join(home, ".local", "bin", "qwen"),
-				} {
-					if isExec(loc) {
-						qwenBin = loc
-						break
-					}
+// resolveQwen finds the qwen binary path.
+// It uses "which qwen" first, then exec.LookPath, and finally falls back to common paths.
+func resolveQwen() (string, error) {
+	// 1. Try running "which qwen" to see if we can resolve it directly
+	cmd := exec.Command("which", "qwen")
+	if out, err := cmd.CombinedOutput(); err == nil {
+		path := strings.TrimSpace(string(out))
+		if path != "" && isExec(path) {
+			return path, nil
+		}
+	}
+
+	// 2. Try exec.LookPath("qwen")
+	if path, err := exec.LookPath("qwen"); err == nil {
+		return path, nil
+	}
+
+	// 3. Fallback to NVM or other common paths
+	if home, err := os.UserHomeDir(); err == nil {
+		nvmDir := os.Getenv("NVM_DIR")
+		if nvmDir == "" {
+			nvmDir = filepath.Join(home, ".nvm")
+		}
+		versionsDir := filepath.Join(nvmDir, "versions", "node")
+		if entries, err := os.ReadDir(versionsDir); err == nil {
+			for _, entry := range entries {
+				candidate := filepath.Join(versionsDir, entry.Name(), "bin", "qwen")
+				if isExec(candidate) {
+					return candidate, nil
 				}
 			}
 		}
-	}
-	if qwenBin == "" {
-		return "", "", fmt.Errorf("qwen not found in PATH or nvm directories")
-	}
-
-	// ── Find node ─────────────────────────────────────────────────────
-	// qwen is a Node.js script; we spawn it as "node qwen [args]"
-	// to avoid execve shebang resolution issues on some systems.
-	nodeBin, err := exec.LookPath("node")
-	if err != nil {
-		// Scan nvm same as above
-		if home, e := os.UserHomeDir(); e == nil {
-			nvmDir := os.Getenv("NVM_DIR")
-			if nvmDir == "" {
-				nvmDir = filepath.Join(home, ".nvm")
-			}
-			versionsDir := filepath.Join(nvmDir, "versions", "node")
-			if entries, e := os.ReadDir(versionsDir); e == nil {
-				for _, entry := range entries {
-					candidate := filepath.Join(versionsDir, entry.Name(), "bin", "node")
-					if isExec(candidate) {
-						nodeBin = candidate
-						break
-					}
-				}
+		// common fixed locations
+		for _, loc := range []string{
+			"/usr/local/bin/qwen",
+			filepath.Join(home, ".local", "bin", "qwen"),
+		} {
+			if isExec(loc) {
+				return loc, nil
 			}
 		}
 	}
-	if nodeBin == "" {
-		return "", "", fmt.Errorf("node not found in PATH")
-	}
 
-	return qwenBin, nodeBin, nil
+	return "", fmt.Errorf("qwen not found in PATH or standard locations")
 }
 
 func isExec(path string) bool {
@@ -253,25 +213,20 @@ func isExec(path string) bool {
 }
 
 func spawnQwen(opts spawnOptions) (*qwenProc, error) {
-	qwenBin, nodeBin, err := resolveQwen()
+	qwenBin, err := resolveQwen()
 	if err != nil {
 		return nil, err
 	}
-	fmt.Printf("Using node: %s\n", nodeBin)
 	fmt.Printf("Using qwen: %s\n", qwenBin)
 
 	args := []string{
-		qwenBin,
 		"--json-file", opts.eventsPath,
 		"--input-file", opts.inputPath,
-	}
-	if opts.resumeSessionID != "" {
-		args = append(args, "--resume", opts.resumeSessionID)
 	}
 	// Append any extra args the user passed (e.g. -c, -y, --model)
 	args = append(args, opts.extraArgs...)
 
-	cmd := exec.Command(nodeBin, args...)
+	cmd := exec.Command(qwenBin, args...)
 	cmd.Dir = opts.projectDir
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 

@@ -24,7 +24,7 @@ type cliOpts struct {
 // We claim: --project-dir, --port, --resume (and their -short forms).
 // Everything else (e.g. -c, -y, --model) is forwarded to qwen unchanged.
 func parseArgs() cliOpts {
-	opts := cliOpts{port: 3000}
+	opts := cliOpts{port: 5000}
 	args := os.Args[1:]
 
 	for i := 0; i < len(args); i++ {
@@ -72,21 +72,20 @@ func cutPrefix(s, prefix string) (string, bool) {
 }
 
 func printHelp() {
-	fmt.Print(`Usage: qwen-code-web [OUR FLAGS] [QWEN FLAGS...]
+	fmt.Print(`Usage: qwen-code-web [OUR FLAGS] -- [QWEN FLAGS...]
 
 Our flags (consumed by qwen-code-web):
   --project-dir <path>   Project directory  (default: current directory)
-  --port <n>             HTTP server port   (default: 3000)
-  --resume               Keep event history; don't clear session files
+  --port <n>             HTTP server port   (default: 5000)
 
-Everything else is forwarded to qwen unchanged:
+Everything behind -- is forwarded to qwen:
   -c, -y, --model, ...   See: qwen --help
 
 Examples:
   cd ~/my-project && qwen-code-web
   qwen-code-web --project-dir ~/my-project
-  qwen-code-web --resume -c
-  qwen-code-web --port 4000 -y
+  qwen-code-web -- -c
+  qwen-code-web --port 4000 -- -y
 `)
 }
 
@@ -116,28 +115,16 @@ func main() {
 		fatalf("session files: %v", err)
 	}
 
-	var resumeID string
-	if opts.resume {
-		resumeID, _ = loadLastSessionID(sf.lastSessionIDPath)
-		if resumeID != "" {
-			fmt.Printf("Resuming session: %s\n", resumeID)
-		} else {
-			fmt.Println("No previous session found — starting fresh")
-		}
-		os.WriteFile(sf.inputPath, nil, 0o600) //nolint:errcheck
-	} else {
-		os.WriteFile(sf.eventsPath, nil, 0o600) //nolint:errcheck
-		os.WriteFile(sf.inputPath, nil, 0o600)  //nolint:errcheck
-	}
+	os.WriteFile(sf.eventsPath, nil, 0o600) //nolint:errcheck
+	os.WriteFile(sf.inputPath, nil, 0o600)  //nolint:errcheck
 
 	// ── Spawn qwen ───────────────────────────────────────────────────────
 	fmt.Printf("Starting Qwen Code in: %s\n", projectDir)
 	proc, err := spawnQwen(spawnOptions{
-		projectDir:      projectDir,
-		eventsPath:      sf.eventsPath,
-		inputPath:       sf.inputPath,
-		resumeSessionID: resumeID,
-		extraArgs:       opts.qwenArgs,
+		projectDir: projectDir,
+		eventsPath: sf.eventsPath,
+		inputPath:  sf.inputPath,
+		extraArgs:  opts.qwenArgs,
 	})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "\nFailed to spawn qwen: %v\n", err)
@@ -156,11 +143,10 @@ func main() {
 
 	// ── Server ───────────────────────────────────────────────────────────
 	srv := newServer(serverConfig{
-		port:              opts.port,
-		projectDir:        projectDir,
-		eventsPath:        sf.eventsPath,
-		inputPath:         sf.inputPath,
-		lastSessionIDPath: sf.lastSessionIDPath,
+		port:       opts.port,
+		projectDir: projectDir,
+		eventsPath: sf.eventsPath,
+		inputPath:  sf.inputPath,
 	}, state)
 
 	go func() {
