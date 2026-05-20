@@ -416,6 +416,19 @@
       white-space: nowrap;
     }
     #sending-label.show { display: block; }
+
+    /* ── Working indicator ────────────────────────────────────────────────── */
+    #working-indicator {
+      display: none;
+      align-items: center;
+      gap: 5px;
+      font-size: 12px;
+      color: var(--yellow);
+      white-space: nowrap;
+    }
+    #working-indicator.show { display: flex; }
+    #working-spinner { font-size: 14px; line-height: 1; }
+    #working-elapsed { color: var(--text-muted); font-size: 11px; }
   </style>
 </head>
 <body>
@@ -425,6 +438,11 @@
   <span id="header-sep">/</span>
   <span id="project-name">—</span>
   <div id="header-right">
+    <div id="working-indicator">
+      <span id="working-spinner">⠻</span>
+      <span id="working-label">Working...</span>
+      <span id="working-elapsed"></span>
+    </div>
     <span id="status-badge" class="starting">● starting</span>
     <button id="stop-btn">stop</button>
   </div>
@@ -481,6 +499,40 @@ const stopBtn         = document.getElementById('stop-btn');
 const statusBadge     = document.getElementById('status-badge');
 const projectNameEl   = document.getElementById('project-name');
 const sendingLabel    = document.getElementById('sending-label');
+const workingIndicator = document.getElementById('working-indicator');
+const workingSpinner   = document.getElementById('working-spinner');
+const workingElapsedEl = document.getElementById('working-elapsed');
+
+// ── Working spinner ───────────────────────────────────────────────────────
+const SPINNER_FRAMES = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
+let spinnerIdx   = 0;
+let workingStart = null;
+let workingTimer = null;
+
+function formatElapsed(ms) {
+  const s = Math.floor(ms / 1000);
+  if (s < 60) return `(${s}s)`;
+  return `(${Math.floor(s / 60)}m ${s % 60}s)`;
+}
+
+function startWorking() {
+  if (workingTimer) return; // already running
+  workingStart = Date.now();
+  spinnerIdx = 0;
+  workingSpinner.textContent = SPINNER_FRAMES[0];
+  workingElapsedEl.textContent = '(0s)';
+  workingIndicator.classList.add('show');
+  workingTimer = setInterval(() => {
+    workingSpinner.textContent = SPINNER_FRAMES[spinnerIdx++ % SPINNER_FRAMES.length];
+    workingElapsedEl.textContent = formatElapsed(Date.now() - workingStart);
+  }, 100);
+}
+
+function stopWorking() {
+  if (workingTimer) { clearInterval(workingTimer); workingTimer = null; }
+  workingStart = null;
+  workingIndicator.classList.remove('show');
+}
 
 // ── State ─────────────────────────────────────────────────────────────────
 let sessionStatus = 'starting';
@@ -738,6 +790,8 @@ async function sendApproval(requestId, allowed) {
 }
 
 // ── Main event handler ────────────────────────────────────────────────────
+let isReplaying = false;
+
 function handleQwenEvent(ev) {
   switch (ev.type) {
 
@@ -752,6 +806,7 @@ function handleQwenEvent(ev) {
         conversationEl.appendChild(note);
         scrollToBottom();
       } else if (ev.subtype === 'session_end') {
+        stopWorking();
         const note = document.createElement('div');
         note.className = 'notice';
         note.textContent = 'session ended';
@@ -765,6 +820,7 @@ function handleQwenEvent(ev) {
       if (!sev) break;
       if (sev.type === 'message_start') {
         startStreamingMessage();
+        if (!isReplaying) startWorking();
       } else if (
         sev.type === 'content_block_delta' &&
         sev.delta?.type === 'text_delta' &&
@@ -776,6 +832,7 @@ function handleQwenEvent(ev) {
     }
 
     case 'assistant':
+      stopWorking();
       renderAssistantEvent(ev);
       break;
 
@@ -784,6 +841,7 @@ function handleQwenEvent(ev) {
       break;
 
     case 'control_request':
+      stopWorking(); // waiting for human approval — no longer "working"
       renderApprovalCard(ev);
       break;
 
@@ -813,6 +871,7 @@ function connect() {
 
     if (msg.type === 'replay_start') {
       // Clear conversation and reset streaming state before replay
+      isReplaying = true;
       conversationEl.innerHTML = '';
       streamingRow  = null;
       streamingBody = null;
@@ -821,6 +880,7 @@ function connect() {
     }
 
     if (msg.type === 'replay_end') {
+      isReplaying = false;
       scrollToBottom();
       return;
     }
