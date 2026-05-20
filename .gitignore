@@ -1,4 +1,12 @@
+# Go build output
+qwen-code-web
+
+# Node.js leftovers (safe to delete: src/ dist/ node_modules/ package*.json tsconfig.json)
 node_modules/
 dist/
+src/
+
+# Session data
 .qwen-code-web/
+
 *.log

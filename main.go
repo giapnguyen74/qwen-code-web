@@ -1,0 +1,201 @@
+package main
+
+import (
+	"fmt"
+	"os"
+	"os/exec"
+	"os/signal"
+	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
+	"syscall"
+)
+
+// cliOpts holds our own flags; everything else is forwarded to qwen.
+type cliOpts struct {
+	projectDir string // defaults to cwd
+	port       int
+	resume     bool
+	qwenArgs   []string // passed through verbatim to qwen
+}
+
+// parseArgs splits os.Args into our flags and qwen's flags.
+// We claim: --project-dir, --port, --resume (and their -short forms).
+// Everything else (e.g. -c, -y, --model) is forwarded to qwen unchanged.
+func parseArgs() cliOpts {
+	opts := cliOpts{port: 3000}
+	args := os.Args[1:]
+
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+
+		// --flag=value forms
+		if v, ok := cutPrefix(arg, "--port="); ok {
+			opts.port, _ = strconv.Atoi(v)
+			continue
+		}
+		if v, ok := cutPrefix(arg, "--project-dir="); ok {
+			opts.projectDir = v
+			continue
+		}
+
+		switch arg {
+		case "--port", "-port":
+			if i+1 < len(args) {
+				i++
+				opts.port, _ = strconv.Atoi(args[i])
+			}
+		case "--project-dir", "-project-dir":
+			if i+1 < len(args) {
+				i++
+				opts.projectDir = args[i]
+			}
+		case "--resume", "-resume":
+			opts.resume = true
+		case "--help", "-h", "-help":
+			printHelp()
+			os.Exit(0)
+		default:
+			opts.qwenArgs = append(opts.qwenArgs, arg)
+		}
+	}
+
+	return opts
+}
+
+func cutPrefix(s, prefix string) (string, bool) {
+	if strings.HasPrefix(s, prefix) {
+		return s[len(prefix):], true
+	}
+	return "", false
+}
+
+func printHelp() {
+	fmt.Print(`Usage: qwen-code-web [OUR FLAGS] [QWEN FLAGS...]
+
+Our flags (consumed by qwen-code-web):
+  --project-dir <path>   Project directory  (default: current directory)
+  --port <n>             HTTP server port   (default: 3000)
+  --resume               Keep event history; don't clear session files
+
+Everything else is forwarded to qwen unchanged:
+  -c, -y, --model, ...   See: qwen --help
+
+Examples:
+  cd ~/my-project && qwen-code-web
+  qwen-code-web --project-dir ~/my-project
+  qwen-code-web --resume -c
+  qwen-code-web --port 4000 -y
+`)
+}
+
+func main() {
+	opts := parseArgs()
+
+	// ── Resolve project directory ────────────────────────────────────────
+	var err error
+	if opts.projectDir == "" {
+		opts.projectDir, err = os.Getwd()
+		if err != nil {
+			fatalf("getwd: %v", err)
+		}
+	}
+	projectDir, err := filepath.Abs(opts.projectDir)
+	if err != nil {
+		fatalf("resolving project dir: %v", err)
+	}
+
+	if err := ensureProjectDir(projectDir); err != nil {
+		fatalf("%v", err)
+	}
+
+	// ── Session files in ~/.qwen-code-web/sessions/<name>/ ───────────────
+	sf, err := ensureSessionFiles(projectDir)
+	if err != nil {
+		fatalf("session files: %v", err)
+	}
+
+	var resumeID string
+	if opts.resume {
+		resumeID, _ = loadLastSessionID(sf.lastSessionIDPath)
+		if resumeID != "" {
+			fmt.Printf("Resuming session: %s\n", resumeID)
+		} else {
+			fmt.Println("No previous session found — starting fresh")
+		}
+		os.WriteFile(sf.inputPath, nil, 0o600) //nolint:errcheck
+	} else {
+		os.WriteFile(sf.eventsPath, nil, 0o600) //nolint:errcheck
+		os.WriteFile(sf.inputPath, nil, 0o600)  //nolint:errcheck
+	}
+
+	// ── Spawn qwen ───────────────────────────────────────────────────────
+	fmt.Printf("Starting Qwen Code in: %s\n", projectDir)
+	proc, err := spawnQwen(spawnOptions{
+		projectDir:      projectDir,
+		eventsPath:      sf.eventsPath,
+		inputPath:       sf.inputPath,
+		resumeSessionID: resumeID,
+		extraArgs:       opts.qwenArgs,
+	})
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "\nFailed to spawn qwen: %v\n", err)
+		fmt.Fprintln(os.Stderr, `Make sure "qwen" is installed and available in PATH.`)
+		os.Exit(1)
+	}
+
+	state := newState()
+	state.setProcess(proc)
+
+	go func() {
+		proc.cmd.Wait() //nolint:errcheck
+		state.setStopped()
+		fmt.Println("\nQwen Code exited")
+	}()
+
+	// ── Server ───────────────────────────────────────────────────────────
+	srv := newServer(serverConfig{
+		port:              opts.port,
+		projectDir:        projectDir,
+		eventsPath:        sf.eventsPath,
+		inputPath:         sf.inputPath,
+		lastSessionIDPath: sf.lastSessionIDPath,
+	}, state)
+
+	go func() {
+		if err := srv.run(); err != nil {
+			fatalf("server: %v", err)
+		}
+	}()
+
+	url := fmt.Sprintf("http://localhost:%d", opts.port)
+	fmt.Printf("\n  qwen-code-web  →  %s\n\n", url)
+	openBrowser(url)
+
+	// ── Graceful shutdown ────────────────────────────────────────────────
+	sig := make(chan os.Signal, 1)
+	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
+	<-sig
+	fmt.Println("\nShutting down...")
+	state.kill()
+	os.Exit(0)
+}
+
+func openBrowser(url string) {
+	var cmd string
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = "open"
+	case "windows":
+		cmd = "start"
+	default:
+		cmd = "xdg-open"
+	}
+	exec.Command(cmd, url).Start() //nolint:errcheck
+}
+
+func fatalf(format string, args ...any) {
+	fmt.Fprintf(os.Stderr, "Error: "+format+"\n", args...)
+	os.Exit(1)
+}

@@ -8,7 +8,8 @@ REPO_URL="${QWEN_WEB_REPO:-https://github.com/YOUR_USER/qwen-code-web.git}"
 INSTALL_DIR="${QWEN_WEB_DIR:-${HOME}/.local/share/qwen-code-web}"
 BIN_DIR="${QWEN_WEB_BIN:-${HOME}/.local/bin}"
 BIN_PATH="${BIN_DIR}/qwen-code-web"
-NODE_MIN_MAJOR=18
+GO_MIN_MAJOR=1
+GO_MIN_MINOR=21
 
 # ── Colours ───────────────────────────────────────────────────────────────────
 if [ -t 1 ]; then
@@ -18,52 +19,34 @@ else
   BOLD=''; GREEN=''; YELLOW=''; RED=''; CYAN=''; DIM=''; NC=''
 fi
 
-step()  { echo -e "${CYAN}${BOLD}==> ${NC}${BOLD}${1}${NC}"; }
-ok()    { echo -e "    ${GREEN}✓${NC} ${1}"; }
-warn()  { echo -e "    ${YELLOW}!${NC} ${1}"; }
-die()   { echo -e "\n${RED}${BOLD}Error:${NC} ${1}\n" >&2; exit 1; }
+step() { echo -e "${CYAN}${BOLD}==> ${NC}${BOLD}${1}${NC}"; }
+ok()   { echo -e "    ${GREEN}✓${NC} ${1}"; }
+warn() { echo -e "    ${YELLOW}!${NC} ${1}"; }
+die()  { echo -e "\n${RED}${BOLD}Error:${NC} ${1}\n" >&2; exit 1; }
 
 # ── Prerequisite checks ───────────────────────────────────────────────────────
 step "Checking prerequisites"
 
-# git
-command -v git >/dev/null 2>&1 || die "git is required but not found. Install git and retry."
+command -v git >/dev/null 2>&1 || die "git is required. Install it and retry."
 ok "git $(git --version | awk '{print $3}')"
 
-# node
-command -v node >/dev/null 2>&1 || die "Node.js is required but not found.
-  Install it via nvm: https://github.com/nvm-sh/nvm
-  Or from: https://nodejs.org"
-
-NODE_VERSION=$(node --version | sed 's/v//')
-NODE_MAJOR=$(echo "${NODE_VERSION}" | cut -d. -f1)
-if [ "${NODE_MAJOR}" -lt "${NODE_MIN_MAJOR}" ]; then
-  die "Node.js ${NODE_MIN_MAJOR}+ is required, found v${NODE_VERSION}."
-fi
-ok "node v${NODE_VERSION}"
-
-# npm
-command -v npm >/dev/null 2>&1 || die "npm is required but not found."
-ok "npm $(npm --version)"
-
-# C++ compiler (needed for node-pty native module)
-if command -v cc >/dev/null 2>&1; then
-  ok "C compiler found ($(cc --version 2>&1 | head -1))"
-else
-  warn "No C compiler found. node-pty native build may fail."
-  if [ "$(uname)" = "Darwin" ]; then
-    warn "On macOS run: xcode-select --install"
-  else
-    warn "On Debian/Ubuntu run: sudo apt install build-essential"
-  fi
+# Go — required to build
+if ! command -v go >/dev/null 2>&1; then
+  die "Go is required but not found.
+  Install it from: https://go.dev/dl/
+  Or via your package manager:
+    macOS:  brew install go
+    Ubuntu: sudo apt install golang-go"
 fi
 
-# python3 (node-gyp dependency)
-if command -v python3 >/dev/null 2>&1; then
-  ok "python3 $(python3 --version 2>&1 | awk '{print $2}')"
-else
-  warn "python3 not found. node-gyp (node-pty build) may fail."
+GO_VERSION=$(go version | awk '{print $3}' | sed 's/go//')
+GO_MAJOR=$(echo "${GO_VERSION}" | cut -d. -f1)
+GO_MINOR=$(echo "${GO_VERSION}" | cut -d. -f2)
+if [ "${GO_MAJOR}" -lt "${GO_MIN_MAJOR}" ] || \
+   { [ "${GO_MAJOR}" -eq "${GO_MIN_MAJOR}" ] && [ "${GO_MINOR}" -lt "${GO_MIN_MINOR}" ]; }; then
+  die "Go ${GO_MIN_MAJOR}.${GO_MIN_MINOR}+ required, found ${GO_VERSION}."
 fi
+ok "go ${GO_VERSION}"
 
 # ── Clone or update ───────────────────────────────────────────────────────────
 if [ -d "${INSTALL_DIR}/.git" ]; then
@@ -80,36 +63,17 @@ if [ -d "${INSTALL_DIR}/.git" ]; then
     ok "Updated to $(git -C "${INSTALL_DIR}" rev-parse --short HEAD)"
   fi
 else
-  step "Installing to ${INSTALL_DIR}"
+  step "Cloning to ${INSTALL_DIR}"
   mkdir -p "$(dirname "${INSTALL_DIR}")"
   git clone --depth=1 "${REPO_URL}" "${INSTALL_DIR}"
   ok "Cloned $(git -C "${INSTALL_DIR}" rev-parse --short HEAD)"
 fi
 
-# ── Install dependencies ──────────────────────────────────────────────────────
-step "Installing npm dependencies (including native node-pty build)"
+# ── Build ─────────────────────────────────────────────────────────────────────
+step "Building (go build)"
 cd "${INSTALL_DIR}"
-npm install --prefer-offline --no-audit --no-fund 2>&1 \
-  | grep -E '^(added|updated|npm (warn|error))' || true
-ok "Dependencies installed"
-
-# ── Build TypeScript ──────────────────────────────────────────────────────────
-step "Building"
-npm run build
-ok "Build complete"
-
-# ── Install bin wrapper ───────────────────────────────────────────────────────
-step "Installing binary to ${BIN_PATH}"
-mkdir -p "${BIN_DIR}"
-
-# The wrapper uses the same node that's in PATH at run-time (respects nvm).
-cat > "${BIN_PATH}" <<EOF
-#!/usr/bin/env bash
-INSTALL_DIR="${INSTALL_DIR}"
-exec node "\${INSTALL_DIR}/dist/cli.js" "\$@"
-EOF
-chmod +x "${BIN_PATH}"
-ok "Wrote ${BIN_PATH}"
+go build -ldflags="-s -w" -o "${BIN_PATH}" .
+ok "Built → ${BIN_PATH}"
 
 # ── PATH setup ────────────────────────────────────────────────────────────────
 step "Checking PATH"
@@ -120,9 +84,7 @@ add_to_path() {
   if [ -f "${FILE}" ] && grep -q '\.local/bin' "${FILE}" 2>/dev/null; then
     ok "${FILE} already has ~/.local/bin in PATH"
   else
-    echo "" >> "${FILE}"
-    echo "# Added by qwen-code-web installer" >> "${FILE}"
-    echo "${LINE}" >> "${FILE}"
+    { echo ""; echo "# Added by qwen-code-web installer"; echo "${LINE}"; } >> "${FILE}"
     ok "Added ~/.local/bin to PATH in ${FILE}"
   fi
 }
@@ -131,12 +93,10 @@ if echo ":${PATH}:" | grep -q ":${BIN_DIR}:"; then
   ok "~/.local/bin is already in PATH"
 else
   warn "~/.local/bin is not in PATH — adding now"
-
   SHELL_NAME=$(basename "${SHELL:-/bin/sh}")
   case "${SHELL_NAME}" in
-    zsh)   add_to_path "${HOME}/.zshrc" ;;
+    zsh)  add_to_path "${HOME}/.zshrc" ;;
     bash)
-      # macOS uses .bash_profile for login shells, Linux uses .bashrc
       if [ "$(uname)" = "Darwin" ]; then
         add_to_path "${HOME}/.bash_profile"
       else
@@ -149,18 +109,16 @@ else
       if grep -q '\.local/bin' "${FISH_CONFIG}" 2>/dev/null; then
         ok "${FISH_CONFIG} already has ~/.local/bin in PATH"
       else
-        echo "" >> "${FISH_CONFIG}"
-        echo "# Added by qwen-code-web installer" >> "${FISH_CONFIG}"
-        echo 'fish_add_path "$HOME/.local/bin"' >> "${FISH_CONFIG}"
+        { echo ""; echo "# Added by qwen-code-web installer"
+          echo 'fish_add_path "$HOME/.local/bin"'; } >> "${FISH_CONFIG}"
         ok "Added ~/.local/bin to PATH in ${FISH_CONFIG}"
       fi
       ;;
     *)
-      warn "Unknown shell '${SHELL_NAME}'. Add this line to your shell config manually:"
+      warn "Unknown shell '${SHELL_NAME}'. Add this to your shell config manually:"
       echo "    export PATH=\"\${HOME}/.local/bin:\${PATH}\""
       ;;
   esac
-
   echo ""
   warn "Reload your shell or run:"
   echo -e "    ${BOLD}export PATH=\"\${HOME}/.local/bin:\${PATH}\"${NC}"
@@ -172,7 +130,6 @@ echo -e "${GREEN}${BOLD}✓ qwen-code-web installed successfully${NC}"
 echo ""
 echo -e "  Version : ${DIM}$(git -C "${INSTALL_DIR}" rev-parse --short HEAD)${NC}"
 echo -e "  Binary  : ${DIM}${BIN_PATH}${NC}"
-echo -e "  Location: ${DIM}${INSTALL_DIR}${NC}"
 echo ""
 echo -e "  ${BOLD}Usage:${NC}"
 echo -e "    ${CYAN}qwen-code-web --project-dir ./my-project${NC}"
