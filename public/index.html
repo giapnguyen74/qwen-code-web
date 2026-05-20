@@ -589,6 +589,15 @@ function scrollToBottom() {
   c.scrollTop = c.scrollHeight;
 }
 
+function appendRow(row) {
+  const c = document.getElementById('conversation');
+  c.appendChild(row);
+  if (workingRow && workingRow !== row) {
+    c.appendChild(workingRow);
+  }
+  scrollToBottom();
+}
+
 // ── DOM refs ──────────────────────────────────────────────────────────────
 const conversationEl  = document.getElementById('conversation');
 const inputEl         = document.getElementById('message-input');
@@ -626,8 +635,7 @@ function startWorking() {
       <span class="working-elapsed-inline">(0s)</span>
     </div>
   `;
-  conversationEl.appendChild(workingRow);
-  scrollToBottom();
+  appendRow(workingRow);
 
   const spinnerEl = workingRow.querySelector('.working-spinner-inline');
   const elapsedEl = workingRow.querySelector('.working-elapsed-inline');
@@ -732,8 +740,7 @@ function renderUserEvent(ev) {
       <div class="msg-label user">You</div>
       <div class="msg-body"><div class="user-text">${esc(text)}</div></div>
     `;
-    conversationEl.appendChild(row);
-    scrollToBottom();
+    appendRow(row);
   }
 
   // Tool results → compact result cards (no "You" label)
@@ -746,8 +753,7 @@ function renderUserEvent(ev) {
       body.appendChild(renderToolResultBlock(block));
     }
     row.appendChild(body);
-    conversationEl.appendChild(row);
-    scrollToBottom();
+    appendRow(row);
   }
 }
 
@@ -769,11 +775,10 @@ function startStreamingMessage() {
     <div class="msg-label assistant">Qwen</div>
     <div class="msg-body"><span class="md streaming"></span></div>
   `;
-  conversationEl.appendChild(row);
+  appendRow(row);
   streamingRow  = row;
   streamingBody = row.querySelector('.md');
   streamingText = '';
-  scrollToBottom();
 }
 
 function appendStreamingText(text) {
@@ -830,8 +835,7 @@ function renderAssistantEvent(ev) {
 
   row.appendChild(label);
   row.appendChild(body);
-  conversationEl.appendChild(row);
-  scrollToBottom();
+  appendRow(row);
 }
 
 // ── Approval cards ────────────────────────────────────────────────────────
@@ -858,9 +862,8 @@ function renderApprovalCard(ev) {
     </div>
   `;
 
-  conversationEl.appendChild(row);
+  appendRow(row);
   pendingApprovals[request_id] = row;
-  scrollToBottom();
 }
 
 function resolveApprovalCard(requestId, allowed) {
@@ -923,15 +926,13 @@ function handleQwenEvent(ev) {
         const note = document.createElement('div');
         note.className = 'notice';
         note.textContent = `session started · ${cwd}`;
-        conversationEl.appendChild(note);
-        scrollToBottom();
+        appendRow(note);
       } else if (ev.subtype === 'session_end') {
         stopWorking();
         const note = document.createElement('div');
         note.className = 'notice';
         note.textContent = 'session ended';
-        conversationEl.appendChild(note);
-        scrollToBottom();
+        appendRow(note);
       }
       break;
 
@@ -1064,6 +1065,9 @@ async function sendMessage() {
   sendBtn.disabled = true;
   sendingLabel.classList.add('show');
 
+  // Start working spinner immediately so the user knows the bot is working!
+  startWorking();
+
   try {
     const res = await fetch('/message', {
       method: 'POST',
@@ -1073,9 +1077,11 @@ async function sendMessage() {
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       console.error('Send failed:', err);
+      stopWorking();
     }
   } catch (err) {
     console.error('Send error:', err);
+    stopWorking();
   } finally {
     sendingLabel.classList.remove('show');
     sendBtn.disabled = (sessionStatus !== 'running');
