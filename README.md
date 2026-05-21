@@ -9,7 +9,13 @@
 
 It is a lightweight, single-binary solution that lets you leave your AI agents running 24/7. You can check in on their progress, review their work, and prompt them for the next features from anywhere. It brings highly flexible "vibe coding" to any device you own—without the bloat.
 
-![qwen-code-web Screenshot](assets/Screenshot.jpg)
+### Gallery
+
+![Desktop Dashboard](assets/Screenshot1.png)
+
+![Desktop Demo](assets/demo1.webp)
+
+![Mobile Vibe Coding](assets/mobile-demo.webp)
 
 ## Features
 
