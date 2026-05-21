@@ -233,6 +233,10 @@ func (s *ProjectStore) CreateNewRepo(name string) (*Project, error) {
 	gi := filepath.Join(absPath, ".gitignore")
 	os.WriteFile(gi, []byte("node_modules/\ndist/\n.qwen-code-web/\n*.log\n"), 0o644) //nolint:errcheck
 
+	// Initial commit to avoid 'branch does not have any commits yet' fatal error
+	exec.Command("git", "-C", absPath, "add", ".gitignore").Run() //nolint:errcheck
+	exec.Command("git", "-C", absPath, "commit", "-m", "Initial commit").Run() //nolint:errcheck
+
 	id := projectID(absPath)
 
 	s.mu.Lock()

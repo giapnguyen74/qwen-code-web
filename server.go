@@ -176,6 +176,7 @@ func (s *Server) run() error {
 	apiMux.HandleFunc("/api/projects/clone", s.handleCloneRepo)
 	apiMux.HandleFunc("/api/settings/global", s.handleUpdateGlobalSettings)
 	apiMux.HandleFunc("/api/workspace/folders", s.handleWorkspaceFolders)
+	apiMux.HandleFunc("/api/check-origin", s.handleCheckOrigin)
 	apiMux.HandleFunc("/api/projects/", s.handleProjectAPI)
 
 	mux.Handle("/api/", s.authMiddleware(apiMux))
@@ -372,6 +373,15 @@ func (s *Server) handleConversationPage(w http.ResponseWriter, r *http.Request) 
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
 	w.Write(conversationHTML) //nolint:errcheck
+}
+
+func (s *Server) handleCheckOrigin(w http.ResponseWriter, r *http.Request) {
+	origin := r.URL.Query().Get("origin")
+	if !checkOrigin(origin, s.cfg.origins) {
+		writeError(w, http.StatusForbidden, "invalid origin")
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
 }
 
 // ── Project CRUD endpoints ────────────────────────────────────────────────

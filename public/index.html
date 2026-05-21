@@ -715,11 +715,6 @@
   </div>
 
   <div id="chat-area">
-    <div id="origin-warning" style="display: none;">
-      <strong>WebSocket Connection Failed.</strong> If you are accessing this server via a remote IP or domain, the connection may be blocked by same-origin security.<br>
-      Please configure your origin in <code>~/.qwen-code-web/settings.json</code> (e.g. <code>"origins": ["<span class="warning-origin-url"></span>"]</code>) or launch with <code>--origins <span class="warning-origin-url"></span></code>.
-    </div>
-
     <div id="conversation"></div>
 
     <!-- File Viewer Panel (replaces conversation when active) -->
@@ -751,6 +746,19 @@
         </div>
         <span id="sending-label">sending…</span>
       </div>
+    </div>
+  </div>
+</div>
+
+<!-- Origin Modal -->
+<div id="origin-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.8); z-index:10000; align-items:center; justify-content:center; flex-direction:column;">
+  <div style="background:var(--surface); padding:24px; border-radius:12px; border:1px solid var(--red); width:400px; text-align:center;">
+    <div style="font-size:16px; font-weight:600; margin-bottom:16px; color:var(--red);">Origin Not Allowed</div>
+    <div style="font-size:13px; color:var(--text); margin-bottom:16px; line-height:1.5;">
+      Your connection was blocked by the server's same-origin security policy.<br><br>
+      Please configure your origin in <code>~/.qwen-code-web/settings.json</code>:<br>
+      <code style="display:block; margin:8px 0; padding:8px; background:var(--bg); border:1px solid var(--border); border-radius:4px; text-align:left;">"origins": ["<span class="warning-origin-url"></span>"]</code>
+      Or launch with <code>--origins <span class="warning-origin-url"></span></code>.
     </div>
   </div>
 </div>
@@ -1345,21 +1353,15 @@ function handleQwenEvent(ev) {
 let reconnectDelay = 2000;
 let isWsConnected = false;
 
-function updateWSWarningVisibility() {
-  const originWarningEl = document.getElementById('origin-warning');
-  const warningOriginUrls = document.querySelectorAll('.warning-origin-url');
-  warningOriginUrls.forEach(el => el.textContent = location.origin);
-
-  const isLocalhost = location.hostname === 'localhost' || location.hostname === '127.0.0.1';
-  if (!isWsConnected && !isLocalhost) {
-    originWarningEl.style.display = 'block';
-  } else {
-    originWarningEl.style.display = 'none';
-  }
-}
-
-// Initial visibility check
-updateWSWarningVisibility();
+// ── CORS / Origin Check ───────────────────────────────────────────────────
+fetch(\`/api/check-origin?origin=\${encodeURIComponent(location.origin)}\`)
+  .then(r => {
+    if (r.status === 403) {
+      document.querySelectorAll('.warning-origin-url').forEach(el => el.textContent = location.origin);
+      document.getElementById('origin-modal').style.display = 'flex';
+    }
+  })
+  .catch(console.error);
 
 function connect() {
   const ws = new WebSocket(WS_URL);
@@ -1368,7 +1370,6 @@ function connect() {
     console.log('[ws] connected');
     reconnectDelay = 2000; // reset delay on successful connection
     isWsConnected = true;
-    updateWSWarningVisibility();
   };
 
   ws.onmessage = (e) => {
@@ -1405,7 +1406,6 @@ function connect() {
   ws.onclose = () => {
     console.log(`[ws] disconnected — reconnecting in ${reconnectDelay / 1000}s…`);
     isWsConnected = false;
-    updateWSWarningVisibility();
     setTimeout(() => {
       reconnectDelay = Math.min(reconnectDelay * 1.5, 30000);
       connect();
