@@ -140,7 +140,11 @@ func newServer(cfg serverConfig, projects *ProjectStore, procmgr *ProcManager) *
 		WriteBufferSize: 4096,
 		CheckOrigin: func(r *http.Request) bool {
 			origin := r.Header.Get("Origin")
-			return checkOrigin(origin, cfg.origins)
+			ok := checkOrigin(origin, cfg.origins)
+			if !ok {
+				fmt.Printf("[ws] origin rejected: %s (allowed: %v)\n", origin, cfg.origins)
+			}
+			return ok
 		},
 	}
 
@@ -318,6 +322,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		cookie, err := r.Cookie("qwen_auth")
 		if err != nil || cookie.Value == "" {
+			fmt.Printf("[auth] unauthorized: missing or empty qwen_auth cookie (path: %s)\n", r.URL.Path)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
@@ -331,6 +336,7 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 		s.tokensMu.Unlock()
 
 		if !isValid {
+			fmt.Printf("[auth] unauthorized: token expired or invalid (path: %s)\n", r.URL.Path)
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
