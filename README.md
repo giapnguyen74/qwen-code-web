@@ -15,9 +15,6 @@ It is a lightweight, single-binary solution that lets you leave your AI agents r
   <img src="assets/Screenshot1.png" width="800" alt="Desktop Dashboard">
 </p>
 
-<p align="center">
-  <img src="assets/demo1.webp" width="800" alt="Desktop Demo">
-</p>
 
 <p align="center">
   <img src="assets/mobile-demo.webp" width="300" alt="Mobile Vibe Coding">

@@ -1485,7 +1485,11 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
     }
   });
 } else {
-  micBtn.style.display = 'none'; // Hide if browser does not support it
+  micBtn.style.opacity = '0.4';
+  micBtn.style.cursor = 'not-allowed';
+  micBtn.addEventListener('click', () => {
+    alert('Voice input is disabled by your browser. Apple and Google require the web app to be accessed via HTTPS (secure context) or localhost to use the microphone.');
+  });
 }
 
 // Fetch initial status (shows project dir even before first WS message)
