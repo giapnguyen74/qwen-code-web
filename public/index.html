@@ -193,6 +193,24 @@
     .file-item:hover { background: var(--surface2); }
     .file-item.dir { color: var(--accent); }
     .file-item-icon { width: 16px; text-align: center; }
+    
+    .file-view-btn {
+      background: transparent;
+      border: none;
+      color: var(--text-muted);
+      cursor: pointer;
+      opacity: 0;
+      padding: 0 4px;
+      font-size: 14px;
+      transition: opacity 0.2s, color 0.2s;
+    }
+    .file-item:hover .file-view-btn {
+      opacity: 0.6;
+    }
+    .file-view-btn:hover {
+      opacity: 1 !important;
+      color: var(--accent);
+    }
 
     /* ── Chat Area ───────────────────────────────────────────────────── */
     #chat-area {
@@ -704,6 +722,20 @@
 
     <div id="conversation"></div>
 
+    <!-- File Viewer Panel (replaces conversation when active) -->
+    <div id="file-viewer-panel" style="display:none; flex:1; flex-direction:column; overflow:hidden; background:var(--bg); min-height:0;">
+      <div style="padding:12px 16px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; background:var(--surface2);">
+        <div id="fv-title" style="font-weight:600; font-family:var(--font-mono); font-size:13px; color:var(--accent); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">filename.txt</div>
+        <div style="display:flex; align-items:center; gap:16px;">
+          <label id="fv-linenum-label" style="font-size:12px; color:var(--text-muted); display:none; align-items:center; gap:4px; cursor:pointer; user-select:none;">
+            <input type="checkbox" id="fv-linenum-toggle" onchange="toggleLineNumbers(this.checked)"> Line Numbers
+          </label>
+          <button class="header-action-btn" onclick="closeFileViewer()" style="padding: 2px 6px;" title="Close Viewer">✕</button>
+        </div>
+      </div>
+      <div id="fv-content" style="flex:1; overflow:auto; position:relative;"></div>
+    </div>
+
     <div id="input-area">
       <textarea
         id="message-input"
@@ -905,9 +937,12 @@ function renderTreeLevel(dirPath, depth) {
       }
     } else {
       html += `
-        <div class="file-item" style="padding-left: ${padding}px" onclick="handleItemClick('${esc(targetPath)}', false)">
-          <div class="file-item-icon">📄</div>
-          <div style="flex:1">${esc(f.name)}</div>
+        <div class="file-item" style="padding-left: ${padding}px">
+          <div class="file-item-icon" onclick="handleItemClick('${esc(targetPath)}', false)">📄</div>
+          <div style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" onclick="handleItemClick('${esc(targetPath)}', false)">${esc(f.name)}</div>
+          <button class="file-view-btn" onclick="openFileViewer('${esc(targetPath)}', event)" title="View File">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+          </button>
         </div>
       `;
     }
@@ -1585,6 +1620,80 @@ fetch(`${API_BASE}/status`)
     setStatus(data.status, data.sessionId);
   })
   .catch(console.error);
+
+// ── File Viewer ───────────────────────────────────────────────────────────
+async function openFileViewer(path, event) {
+  if (event) event.stopPropagation();
+  const panel = document.getElementById('file-viewer-panel');
+  const conv = document.getElementById('conversation');
+  const title = document.getElementById('fv-title');
+  const content = document.getElementById('fv-content');
+  
+  title.textContent = path;
+  content.innerHTML = '<div style="color:var(--text-muted); text-align:center; padding: 40px;">Loading...</div>';
+  
+  // Swap panels
+  conv.style.display = 'none';
+  panel.style.display = 'flex';
+
+  try {
+    const res = await fetch(`${API_BASE}/files/read?path=${encodeURIComponent(path)}`);
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      content.innerHTML = `<div style="color:var(--red); padding: 20px; font-family:var(--font-mono); font-size:13px;">Error: ${esc(errData.error || 'Failed to load file')}</div>`;
+      return;
+    }
+    const data = await res.json();
+    
+    if (data.type === 'text') {
+      const numLines = data.content.split('\n').length;
+      let lineNumsHtml = '';
+      for (let i = 1; i <= numLines; i++) {
+        lineNumsHtml += `${i}\n`;
+      }
+      
+      let codeHtml = esc(data.content);
+      if (window.hljs) {
+        try {
+          codeHtml = hljs.highlightAuto(data.content).value;
+        } catch (e) {}
+      }
+      
+      content.innerHTML = `
+        <div style="display:flex; min-height:100%;">
+          <div id="fv-line-numbers" style="padding:16px 8px; text-align:right; color:var(--text-muted); user-select:none; font-family:var(--font-mono); font-size:13px; border-right:1px solid var(--border); display:none; min-width:40px; background:var(--surface2);">
+            ${lineNumsHtml}
+          </div>
+          <pre style="margin:0; padding:16px; font-size:13px; font-family:var(--font-mono); flex:1; overflow-x:auto; min-width:0;">
+            <code class="hljs" style="background:transparent; padding:0;">${codeHtml}</code>
+          </pre>
+        </div>
+      `;
+      document.getElementById('fv-linenum-label').style.display = 'flex';
+      document.getElementById('fv-linenum-toggle').checked = false;
+    } else if (data.type === 'image') {
+      document.getElementById('fv-linenum-label').style.display = 'none';
+      content.innerHTML = `<div style="display:flex; justify-content:center; align-items:center; min-height:100%; padding:20px;"><img src="${data.url}" style="max-width:100%; max-height: 70vh; object-fit: contain; border-radius:4px; box-shadow:0 4px 12px rgba(0,0,0,0.5);" /></div>`;
+    } else if (data.type === 'video') {
+      document.getElementById('fv-linenum-label').style.display = 'none';
+      content.innerHTML = `<div style="display:flex; justify-content:center; align-items:center; min-height:100%; padding:20px;"><video src="${data.url}" controls style="max-width:100%; max-height: 70vh; border-radius:4px; box-shadow:0 4px 12px rgba(0,0,0,0.5);"></video></div>`;
+    }
+  } catch (err) {
+    document.getElementById('fv-linenum-label').style.display = 'none';
+    content.innerHTML = `<div style="color:var(--red); padding: 20px; font-family:var(--font-mono); font-size:13px;">Failed to load file: ${esc(err.message)}</div>`;
+  }
+}
+
+function toggleLineNumbers(show) {
+  const ln = document.getElementById('fv-line-numbers');
+  if (ln) ln.style.display = show ? 'block' : 'none';
+}
+
+function closeFileViewer() {
+  document.getElementById('file-viewer-panel').style.display = 'none';
+  document.getElementById('conversation').style.display = 'flex';
+  document.getElementById('fv-content').innerHTML = '';
+}
 </script>
 </body>
 </html>

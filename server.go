@@ -2,6 +2,7 @@ package main
 
 import (
 	_ "embed"
+	"bytes"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -230,7 +231,122 @@ func (s *Server) handleProjectFiles(w http.ResponseWriter, r *http.Request, proj
 	})
 }
 
-// ── Page handlers ─────────────────────────────────────────────────────────
+func (s *Server) handleProjectRawFile(w http.ResponseWriter, r *http.Request, proj Project) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	pathParam := r.URL.Query().Get("path")
+	cleanPath := filepath.Clean("/" + pathParam)
+	targetPath := filepath.Join(proj.Path, cleanPath)
+
+	if !strings.HasPrefix(targetPath, proj.Path) {
+		writeError(w, http.StatusForbidden, "invalid file path")
+		return
+	}
+
+	http.ServeFile(w, r, targetPath)
+}
+
+func (s *Server) handleProjectReadFile(w http.ResponseWriter, r *http.Request, proj Project) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	pathParam := r.URL.Query().Get("path")
+	cleanPath := filepath.Clean("/" + pathParam)
+	targetPath := filepath.Join(proj.Path, cleanPath)
+
+	if !strings.HasPrefix(targetPath, proj.Path) {
+		writeError(w, http.StatusForbidden, "invalid file path")
+		return
+	}
+
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
+
+	if info.IsDir() {
+		writeError(w, http.StatusBadRequest, "path is a directory")
+		return
+	}
+
+	const maxTextSize = 2 * 1024 * 1024 // 2MB
+	if info.Size() > maxTextSize {
+		// Just to check if it's media before flatly rejecting
+		ext := strings.ToLower(filepath.Ext(targetPath))
+		isMediaExt := ext == ".png" || ext == ".jpg" || ext == ".jpeg" || ext == ".gif" || ext == ".webp" || ext == ".mp4" || ext == ".webm"
+		if !isMediaExt {
+			writeError(w, http.StatusBadRequest, "file too large for inline viewing (max 2MB)")
+			return
+		}
+	}
+
+	f, err := os.Open(targetPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	defer f.Close()
+
+	// Read first 512 bytes for sniffing
+	head := make([]byte, 512)
+	n, _ := f.Read(head)
+	head = head[:n]
+
+	contentType := http.DetectContentType(head)
+	isText := strings.HasPrefix(contentType, "text/") || contentType == "application/json"
+	
+	// Better fallback for source code files which sometimes detect as application/octet-stream
+	if !isText {
+		if !bytes.Contains(head, []byte{0}) {
+			isText = true
+		}
+	}
+
+	if isText {
+		if info.Size() > maxTextSize {
+			writeError(w, http.StatusBadRequest, "text file too large for inline viewing (max 2MB)")
+			return
+		}
+		// Read entire file
+		f.Seek(0, 0)
+		data, err := os.ReadFile(targetPath)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, err.Error())
+			return
+		}
+		writeJSON(w, map[string]any{
+			"type":    "text",
+			"content": string(data),
+		})
+		return
+	}
+
+	if strings.HasPrefix(contentType, "image/") {
+		writeJSON(w, map[string]any{
+			"type": "image",
+			"url":  fmt.Sprintf("/api/projects/%s/files/raw?path=%s", proj.ID, url.QueryEscape(pathParam)),
+		})
+		return
+	}
+
+	if strings.HasPrefix(contentType, "video/") {
+		writeJSON(w, map[string]any{
+			"type": "video",
+			"url":  fmt.Sprintf("/api/projects/%s/files/raw?path=%s", proj.ID, url.QueryEscape(pathParam)),
+		})
+		return
+	}
+
+	writeError(w, http.StatusBadRequest, "binary file format not supported for inline viewing")
+}
+
+// ── Project action handlers ─────────────────────────────────────────────────────────
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
@@ -551,6 +667,10 @@ func (s *Server) handleProjectAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectWS(w, r, projectID)
 	case "files":
 		s.handleProjectFiles(w, r, *proj)
+	case "files/read":
+		s.handleProjectReadFile(w, r, *proj)
+	case "files/raw":
+		s.handleProjectRawFile(w, r, *proj)
 	default:
 		http.NotFound(w, r)
 	}
