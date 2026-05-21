@@ -3,12 +3,15 @@ package main
 import (
 	_ "embed"
 	"bytes"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"net"
 	"net/http"
 	"net/url"
 	"os"
+	"context"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -68,6 +71,7 @@ type serverConfig struct {
 	origins      []string
 	workspace    string
 	passwordHash string
+	configDir    string
 }
 
 type inputJob struct {
@@ -80,9 +84,28 @@ type Server struct {
 	projects *ProjectStore
 	procmgr  *ProcManager
 	upgrader websocket.Upgrader
+	srv      *http.Server
 
-	tokens   map[string]time.Time
 	tokensMu sync.Mutex
+	tokens   map[string]time.Time
+}
+
+func (s *Server) loadTokens() {
+	b, err := os.ReadFile(filepath.Join(s.cfg.configDir, "tokens.json"))
+	if err == nil {
+		s.tokensMu.Lock()
+		json.Unmarshal(b, &s.tokens)
+		s.tokensMu.Unlock()
+	}
+}
+
+func (s *Server) saveTokens() {
+	s.tokensMu.Lock()
+	defer s.tokensMu.Unlock()
+	b, err := json.Marshal(s.tokens)
+	if err == nil {
+		os.WriteFile(filepath.Join(s.cfg.configDir, "tokens.json"), b, 0600)
+	}
 }
 
 func isLocalOrigin(origin string) bool {
@@ -150,13 +173,15 @@ func newServer(cfg serverConfig, projects *ProjectStore, procmgr *ProcManager) *
 		},
 	}
 
-	return &Server{
+	s := &Server{
 		cfg:      cfg,
 		projects: projects,
 		procmgr:  procmgr,
 		upgrader: upgrader,
 		tokens:   make(map[string]time.Time),
 	}
+	s.loadTokens()
+	return s
 }
 
 func (s *Server) run() error {
@@ -182,10 +207,22 @@ func (s *Server) run() error {
 	mux.Handle("/api/", s.authMiddleware(apiMux))
 
 	addr := fmt.Sprintf("%s:%d", s.cfg.host, s.cfg.port)
+	s.srv = &http.Server{Addr: addr, Handler: mux}
+
 	fmt.Fprintf(os.Stderr, "  [server] HTTP Server starting to listen on %s...\n", addr)
-	err := http.ListenAndServe(addr, mux)
-	fmt.Fprintf(os.Stderr, "  [server] HTTP Server stopped: %v\n", err)
-	return err
+	err := s.srv.ListenAndServe()
+	if err != nil && err != http.ErrServerClosed {
+		fmt.Fprintf(os.Stderr, "  [server] HTTP Server stopped: %v\n", err)
+		return err
+	}
+	return nil
+}
+
+func (s *Server) Shutdown(ctx context.Context) error {
+	if s.srv != nil {
+		return s.srv.Shutdown(ctx)
+	}
+	return nil
 }
 
 func (s *Server) handleProjectFiles(w http.ResponseWriter, r *http.Request, proj Project) {
@@ -202,7 +239,7 @@ func (s *Server) handleProjectFiles(w http.ResponseWriter, r *http.Request, proj
 	targetDir := filepath.Join(proj.Path, cleanDir)
 
 	// Ensure the targetDir is inside the project path (sanity check after Clean)
-	if !strings.HasPrefix(targetDir, proj.Path) {
+	if !isSafePath(targetDir, proj.Path) {
 		writeError(w, http.StatusForbidden, "invalid directory")
 		return
 	}
@@ -242,7 +279,7 @@ func (s *Server) handleProjectRawFile(w http.ResponseWriter, r *http.Request, pr
 	cleanPath := filepath.Clean("/" + pathParam)
 	targetPath := filepath.Join(proj.Path, cleanPath)
 
-	if !strings.HasPrefix(targetPath, proj.Path) {
+	if !isSafePath(targetPath, proj.Path) {
 		writeError(w, http.StatusForbidden, "invalid file path")
 		return
 	}
@@ -260,7 +297,7 @@ func (s *Server) handleProjectReadFile(w http.ResponseWriter, r *http.Request, p
 	cleanPath := filepath.Clean("/" + pathParam)
 	targetPath := filepath.Join(proj.Path, cleanPath)
 
-	if !strings.HasPrefix(targetPath, proj.Path) {
+	if !isSafePath(targetPath, proj.Path) {
 		writeError(w, http.StatusForbidden, "invalid file path")
 		return
 	}
@@ -507,12 +544,15 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Generate a token
-	token := fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
+	// Generate a secure token
+	b := make([]byte, 16)
+	rand.Read(b)
+	token := hex.EncodeToString(b)
 
 	s.tokensMu.Lock()
 	s.tokens[token] = time.Now().Add(10 * 24 * time.Hour)
 	s.tokensMu.Unlock()
+	s.saveTokens()
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     "qwen_auth",
@@ -849,7 +889,7 @@ func (s *Server) handleProjectWS(w http.ResponseWriter, r *http.Request, project
 	}
 
 	// 1. Current status
-	if !write(mustMarshalRaw(map[string]any{
+	if !write(mustMarshal(map[string]any{
 		"type":      "server_status",
 		"status":    status,
 		"sessionId": sessionID,
@@ -955,7 +995,7 @@ func onProjectLiveEvent(ap *ActiveProject, raw json.RawMessage) {
 // marshalProjectStatus creates a server_status WS message for a project.
 func marshalProjectStatus(ap *ActiveProject) []byte {
 	status, sessionID := ap.State.get()
-	return mustMarshalRaw(map[string]any{
+	return mustMarshal(map[string]any{
 		"type":      "server_status",
 		"status":    status,
 		"sessionId": sessionID,
@@ -964,7 +1004,7 @@ func marshalProjectStatus(ap *ActiveProject) []byte {
 
 // marshalQwenEvent wraps a raw qwen event for WS transmission.
 func marshalQwenEvent(raw json.RawMessage) []byte {
-	return mustMarshalRaw(map[string]any{
+	return mustMarshal(map[string]any{
 		"type": "qwen_event",
 		"data": raw,
 	})
@@ -984,11 +1024,25 @@ func writeError(w http.ResponseWriter, code int, msg string) {
 }
 
 func mustMarshal(v any) []byte {
-	b, _ := json.Marshal(v)
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
 	return b
 }
 
-func mustMarshalRaw(v any) []byte {
-	b, _ := json.Marshal(v)
-	return b
+func isSafePath(target, base string) bool {
+	realBase, err := filepath.EvalSymlinks(base)
+	if err != nil {
+		realBase = base
+	}
+	realTarget, err := filepath.EvalSymlinks(target)
+	if err != nil {
+		realTarget = target
+	}
+	rel, err := filepath.Rel(realBase, realTarget)
+	if err != nil {
+		return false
+	}
+	return !strings.HasPrefix(rel, "..") && rel != ".."
 }

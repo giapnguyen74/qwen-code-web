@@ -162,8 +162,7 @@ func (pm *ProcManager) Stop(projectID string) error {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		// Wait for process state to become stopped
-		for i := 0; i < 15; i++ { // 1.5 seconds
+		for i := 0; i < 100; i++ { // 10 seconds
 			status, _ := ap.State.get()
 			if status == "stopped" {
 				return

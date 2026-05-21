@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 
 	"golang.org/x/crypto/bcrypt"
 	"golang.org/x/term"
@@ -223,12 +225,14 @@ func main() {
 	fmt.Fprintf(os.Stderr, "  Workspace → %s\n\n", workspace)
 
 	// ── Start HTTP server ────────────────────────────────────────────────
+	home, _ := os.UserHomeDir()
 	srv := newServer(serverConfig{
 		host:         opts.host,
 		port:         opts.port,
 		origins:      opts.origins,
 		workspace:    workspace,
 		passwordHash: settings.PasswordHash,
+		configDir:    filepath.Join(home, ".qwen-code-web"),
 	}, projects, procmgr)
 
 	go func() {
@@ -244,6 +248,13 @@ func main() {
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
 	<-sig
 	fmt.Fprintln(os.Stderr, "\nReceived signal, shutting down...")
+	
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := srv.Shutdown(ctx); err != nil {
+		fmt.Fprintf(os.Stderr, "HTTP Server shutdown error: %v\n", err)
+	}
+
 	procmgr.KillAll()
 	os.Exit(0)
 }

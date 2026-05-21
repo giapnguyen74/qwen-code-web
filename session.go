@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"syscall"
+	"time"
 
 	"github.com/creack/pty/v2"
 )
@@ -110,13 +112,29 @@ func (s *State) get() (status, sessionID string) {
 }
 
 func (s *State) kill() {
-	s.mu.Lock(); defer s.mu.Unlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.status = "stopped"
-	if s.proc == nil {
+	if s.proc == nil || s.proc.cmd == nil || s.proc.cmd.Process == nil {
 		return
 	}
-	if s.proc.cmd != nil && s.proc.cmd.Process != nil {
-		s.proc.cmd.Process.Kill() //nolint:errcheck
+	
+	// Send SIGTERM
+	_ = s.proc.cmd.Process.Signal(syscall.SIGTERM)
+	
+	// Wait up to 5s before SIGKILL
+	done := make(chan struct{})
+	go func() {
+		_ = s.proc.cmd.Wait()
+		close(done)
+	}()
+	
+	select {
+	case <-done:
+		// Exited gracefully
+	case <-time.After(5 * time.Second):
+		// Force kill
+		_ = s.proc.cmd.Process.Kill()
 	}
 }
 

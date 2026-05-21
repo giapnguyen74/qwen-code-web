@@ -102,7 +102,6 @@ If you are accessing the server remotely within a secure network (e.g., a Tailsc
 
 ## TODO
 
-- Support viewing file contents directly in the side panel file browser.
 - Support stopping individual tool calls or agent loops gracefully.
 
 ## License

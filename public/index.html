@@ -908,12 +908,12 @@ async function toggleDir(dirPath, e) {
   listEl.innerHTML = renderTreeLevel('', 0);
 }
 
-function handleItemClick(path, isDir) {
-  // Insert path
-  insertFilePath(path + (isDir ? '/' : ''));
-  // Toggle dir expansion
+function handleItemClick(path, isDir, event) {
+  if (event) event.stopPropagation();
   if (isDir) {
     toggleDir(path);
+  } else {
+    openFileViewer(path);
   }
 }
 
@@ -933,8 +933,11 @@ function renderTreeLevel(dirPath, depth) {
       const icon = isExpanded ? '📂' : '📁';
       html += `
         <div class="file-item dir" style="padding-left: ${padding}px">
-          <div class="file-item-icon" onclick="toggleDir('${esc(targetPath)}', event)">${icon}</div>
-          <div style="flex:1" onclick="handleItemClick('${esc(targetPath)}', true)">${esc(f.name)}</div>
+          <div class="file-item-icon" onclick="handleItemClick('${esc(targetPath)}', true, event)">${icon}</div>
+          <div style="flex:1" onclick="handleItemClick('${esc(targetPath)}', true, event)">${esc(f.name)}</div>
+          <button class="file-view-btn" onclick="insertFilePath('${esc(targetPath)}/', event)" title="Insert Path">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          </button>
         </div>
       `;
       if (isExpanded) {
@@ -943,10 +946,10 @@ function renderTreeLevel(dirPath, depth) {
     } else {
       html += `
         <div class="file-item" style="padding-left: ${padding}px">
-          <div class="file-item-icon" onclick="handleItemClick('${esc(targetPath)}', false)">📄</div>
-          <div style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" onclick="handleItemClick('${esc(targetPath)}', false)">${esc(f.name)}</div>
-          <button class="file-view-btn" onclick="openFileViewer('${esc(targetPath)}', event)" title="View File">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><path d="M2 12s3-7 10-7 10 7 10 7-3 7-10 7-10-7-10-7Z"/><circle cx="12" cy="12" r="3"/></svg>
+          <div class="file-item-icon" onclick="handleItemClick('${esc(targetPath)}', false, event)">📄</div>
+          <div style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" onclick="handleItemClick('${esc(targetPath)}', false, event)">${esc(f.name)}</div>
+          <button class="file-view-btn" onclick="insertFilePath('${esc(targetPath)}', event)" title="Insert Path">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
           </button>
         </div>
       `;
@@ -955,7 +958,8 @@ function renderTreeLevel(dirPath, depth) {
   return html;
 }
 
-function insertFilePath(path) {
+function insertFilePath(path, event) {
+  if (event) event.stopPropagation();
   const input = document.getElementById('message-input');
   const val = input.value;
   if (val && !val.endsWith(' ')) {
@@ -964,7 +968,7 @@ function insertFilePath(path) {
     input.value = val + path + ' ';
   }
   input.focus();
-  checkInput(); // update button state
+  updateInputUI(); // update button state
   
   // Mobile only: Close sidebar when inserting a file
   if (window.innerWidth <= 768) {
@@ -1354,7 +1358,7 @@ let reconnectDelay = 2000;
 let isWsConnected = false;
 
 // ── CORS / Origin Check ───────────────────────────────────────────────────
-fetch(\`/api/check-origin?origin=\${encodeURIComponent(location.origin)}\`)
+fetch(`/api/check-origin?origin=${encodeURIComponent(location.origin)}`)
   .then(r => {
     if (r.status === 403) {
       document.querySelectorAll('.warning-origin-url').forEach(el => el.textContent = location.origin);
@@ -1643,14 +1647,20 @@ async function openFileViewer(path, event) {
     const data = await res.json();
     
     if (data.type === 'text') {
-      let codeHtml = esc(data.content);
-      if (window.hljs) {
-        try {
-          codeHtml = hljs.highlightAuto(data.content).value;
-        } catch (e) {}
-      }
+      const pre = document.createElement('pre');
+      pre.style.cssText = "margin:0; padding:16px; font-size:13px; font-family:var(--font-mono); min-height:100%; overflow-x:auto;";
+      const code = document.createElement('code');
+      code.className = "hljs";
+      code.style.cssText = "background:transparent; padding:0;";
+      code.textContent = data.content; // textContent prevents XSS
+      pre.appendChild(code);
       
-      content.innerHTML = `<pre style="margin:0; padding:16px; font-size:13px; font-family:var(--font-mono); min-height:100%;"><code class="hljs" style="background:transparent; padding:0;">${codeHtml}</code></pre>`;
+      content.innerHTML = '';
+      content.appendChild(pre);
+      
+      if (window.hljs) {
+        hljs.highlightElement(code);
+      }
     } else if (data.type === 'image') {
       content.innerHTML = `<div style="display:flex; justify-content:center; align-items:center; min-height:100%; padding:20px;"><img src="${data.url}" style="max-width:100%; max-height: 70vh; object-fit: contain; border-radius:4px; box-shadow:0 4px 12px rgba(0,0,0,0.5);" /></div>`;
     } else if (data.type === 'video') {
