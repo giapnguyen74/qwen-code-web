@@ -717,7 +717,8 @@
 // Extract project ID from URL: /project/{id}
 const PROJECT_ID = location.pathname.split('/').filter(Boolean).pop() || '';
 const API_BASE = `/api/projects/${PROJECT_ID}`;
-const WS_URL = `ws://${location.host}${API_BASE}/events`;
+const WS_PROTOCOL = location.protocol === 'https:' ? 'wss:' : 'ws:';
+const WS_URL = `${WS_PROTOCOL}//${location.host}${API_BASE}/events`;
 
 // ── Marked setup ─────────────────────────────────────────────────────────
 marked.setOptions({ gfm: true, breaks: true });
