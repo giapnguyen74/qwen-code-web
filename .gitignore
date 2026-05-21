@@ -3,3 +3,6 @@ qwen-code-web
 
 improve
 *.log
+
+.DS_Store
+.env

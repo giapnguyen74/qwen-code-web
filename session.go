@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/creack/pty/v2"
 )
 
 // ── Session files ─────────────────────────────────────────────────────────
@@ -110,7 +112,9 @@ type spawnOptions struct {
 }
 
 type qwenProc struct {
-	cmd *exec.Cmd
+	cmd        *exec.Cmd
+	stderrPipe io.ReadCloser
+	ptyMaster  *os.File // PTY master fd — must be drained to avoid blocking
 }
 
 // State holds runtime session state, safe for concurrent access.
@@ -300,18 +304,21 @@ func spawnQwen(opts spawnOptions) (*qwenProc, error) {
 	cmd.Dir = opts.projectDir
 	cmd.Env = append(os.Environ(), "TERM=xterm-256color")
 
-	// Give qwen full ownership of the real terminal so its TUI renders natively.
-	// Structured events are captured via --json-file; the web server reads that
-	// file independently and does not touch the terminal at all.
-	cmd.Stdin = os.Stdin
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
-
-	if err := cmd.Start(); err != nil {
-		return nil, fmt.Errorf("cmd.Start: %w", err)
+	// Capture stderr via a pipe BEFORE pty.Start so it is not overridden.
+	// pty.Start only sets cmd.Stderr if it is nil.
+	stderrPipe, err := cmd.StderrPipe()
+	if err != nil {
+		return nil, fmt.Errorf("stderr pipe: %w", err)
 	}
 
-	return &qwenProc{cmd: cmd}, nil
+	// Allocate a PTY for stdin/stdout so Qwen sees a real terminal (isatty=true).
+	// The PTY master must be drained by the caller to prevent buffer blocking.
+	ptyMaster, err := pty.Start(cmd)
+	if err != nil {
+		return nil, fmt.Errorf("pty.Start: %w", err)
+	}
+
+	return &qwenProc{cmd: cmd, stderrPipe: stderrPipe, ptyMaster: ptyMaster}, nil
 }
 
 // appendInput appends one JSONL command to the qwen input file.

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -220,7 +221,7 @@ func main() {
 		fatalf("initialising input file: %v", err)
 	}
 
-	// ── Print web UI address now — qwen will claim the terminal next ─────────
+	// ── Print web UI address ────────────────────────────────────────────────
 	displayHost := opts.host
 	if displayHost == "0.0.0.0" {
 		displayHost = "localhost"
@@ -228,7 +229,7 @@ func main() {
 	url := fmt.Sprintf("http://%s:%d", displayHost, opts.port)
 	fmt.Fprintf(os.Stderr, "\n  Web UI → %s\n\n", url)
 
-	// ── Spawn qwen (claims stdin/stdout/stderr) ───────────────────────────
+	// ── Spawn qwen (runs headless, no terminal) ──────────────────────────
 	fmt.Fprintf(os.Stderr, "Starting Qwen Code in: %s\n", projectDir)
 	proc, err := spawnQwen(spawnOptions{
 		projectDir: projectDir,
@@ -245,12 +246,37 @@ func main() {
 	state := newState()
 	state.setProcess(proc)
 
-	// exitCh receives the wait error when qwen exits.
-	exitCh := make(chan error, 1)
+	// ── Stream qwen stderr → main server stderr with [qwen] prefix ────
+	go func() {
+		scanner := bufio.NewScanner(proc.stderrPipe)
+		// Allow up to 1MB lines (qwen can be verbose)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
+		for scanner.Scan() {
+			fmt.Fprintf(os.Stderr, "[qwen] %s\n", scanner.Text())
+		}
+	}()
+
+	// ── Drain PTY master (discard Qwen TUI output to prevent blocking) ──
+	go func() {
+		defer proc.ptyMaster.Close()
+		buf := make([]byte, 4096)
+		for {
+			if _, err := proc.ptyMaster.Read(buf); err != nil {
+				return
+			}
+		}
+	}()
+
+	// ── Monitor qwen process ─────────────────────────────────────────────
 	go func() {
 		err := proc.cmd.Wait()
 		state.setStopped()
-		exitCh <- err
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "\n[monitor] Qwen process exited with error: %v\n", err)
+		} else {
+			fmt.Fprintln(os.Stderr, "\n[monitor] Qwen process exited successfully.")
+		}
+		fmt.Fprintln(os.Stderr, "[monitor] Server continues running. Use Ctrl+C to stop.")
 	}()
 
 	// ── Server (runs silently in the background, no TTY needed) ──────────
@@ -271,21 +297,12 @@ func main() {
 		}
 	}()
 
-	// ── Graceful shutdown ─────────────────────────────────────────────────
-	// Exit when qwen exits naturally OR when we receive SIGTERM/SIGINT.
+	// ── Graceful shutdown on SIGTERM/SIGINT only ──────────────────────────
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
-	select {
-	case <-sig:
-		state.kill()
-	case err := <-exitCh:
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "\nQwen process exited with error: %v\n", err)
-			os.Exit(1)
-		} else {
-			fmt.Fprintln(os.Stderr, "\nQwen process exited successfully.")
-		}
-	}
+	<-sig
+	fmt.Fprintln(os.Stderr, "\nReceived signal, shutting down...")
+	state.kill()
 	os.Exit(0)
 }
 
