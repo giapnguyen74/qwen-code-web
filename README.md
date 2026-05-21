@@ -54,10 +54,18 @@ Move the compiled `qwen-code-web` binary into your standard path (e.g., `/usr/lo
 
 ### Usage
 
-Simply run the server:
+Because `qwen-code-web` spawns the underlying agent as a TUI application, it **must be run in a real terminal (TTY) environment** and should not be run as a pure headless daemon (e.g., standard `systemd` without TTY).
+
+If you are running this on a remote development server, we highly recommend launching it inside a persistent terminal multiplexer like `tmux` or `screen`:
 
 ```bash
+# Start a new tmux session
+tmux new-session -s qwen-server
+
+# Run the server
 qwen-code-web
+
+# You can now safely detach from the session using: Ctrl+B, D
 ```
 
 By default, the server starts on port `4000`. Open your browser to `http://localhost:4000` to access the dashboard. 
