@@ -727,9 +727,6 @@
       <div style="padding:12px 16px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; background:var(--surface2);">
         <div id="fv-title" style="font-weight:600; font-family:var(--font-mono); font-size:13px; color:var(--accent); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">filename.txt</div>
         <div style="display:flex; align-items:center; gap:16px;">
-          <label id="fv-linenum-label" style="font-size:12px; color:var(--text-muted); display:none; align-items:center; gap:4px; cursor:pointer; user-select:none;">
-            <input type="checkbox" id="fv-linenum-toggle" onchange="toggleLineNumbers(this.checked)"> Line Numbers
-          </label>
           <button class="header-action-btn" onclick="closeFileViewer()" style="padding: 2px 6px;" title="Close Viewer">✕</button>
         </div>
       </div>
@@ -1646,12 +1643,6 @@ async function openFileViewer(path, event) {
     const data = await res.json();
     
     if (data.type === 'text') {
-      const numLines = data.content.split('\n').length;
-      let lineNumsHtml = '';
-      for (let i = 1; i <= numLines; i++) {
-        lineNumsHtml += `${i}\n`;
-      }
-      
       let codeHtml = esc(data.content);
       if (window.hljs) {
         try {
@@ -1659,34 +1650,15 @@ async function openFileViewer(path, event) {
         } catch (e) {}
       }
       
-      content.innerHTML = `
-        <div style="display:flex; min-height:100%;">
-          <div id="fv-line-numbers" style="padding:16px 8px; text-align:right; color:var(--text-muted); user-select:none; font-family:var(--font-mono); font-size:13px; border-right:1px solid var(--border); display:none; min-width:40px; background:var(--surface2);">
-            ${lineNumsHtml}
-          </div>
-          <pre style="margin:0; padding:16px; font-size:13px; font-family:var(--font-mono); flex:1; overflow-x:auto; min-width:0;">
-            <code class="hljs" style="background:transparent; padding:0;">${codeHtml}</code>
-          </pre>
-        </div>
-      `;
-      document.getElementById('fv-linenum-label').style.display = 'flex';
-      document.getElementById('fv-linenum-toggle').checked = false;
+      content.innerHTML = `<pre style="margin:0; padding:16px; font-size:13px; font-family:var(--font-mono); min-height:100%;"><code class="hljs" style="background:transparent; padding:0;">${codeHtml}</code></pre>`;
     } else if (data.type === 'image') {
-      document.getElementById('fv-linenum-label').style.display = 'none';
       content.innerHTML = `<div style="display:flex; justify-content:center; align-items:center; min-height:100%; padding:20px;"><img src="${data.url}" style="max-width:100%; max-height: 70vh; object-fit: contain; border-radius:4px; box-shadow:0 4px 12px rgba(0,0,0,0.5);" /></div>`;
     } else if (data.type === 'video') {
-      document.getElementById('fv-linenum-label').style.display = 'none';
       content.innerHTML = `<div style="display:flex; justify-content:center; align-items:center; min-height:100%; padding:20px;"><video src="${data.url}" controls style="max-width:100%; max-height: 70vh; border-radius:4px; box-shadow:0 4px 12px rgba(0,0,0,0.5);"></video></div>`;
     }
   } catch (err) {
-    document.getElementById('fv-linenum-label').style.display = 'none';
     content.innerHTML = `<div style="color:var(--red); padding: 20px; font-family:var(--font-mono); font-size:13px;">Failed to load file: ${esc(err.message)}</div>`;
   }
-}
-
-function toggleLineNumbers(show) {
-  const ln = document.getElementById('fv-line-numbers');
-  if (ln) ln.style.display = show ? 'block' : 'none';
 }
 
 function closeFileViewer() {
