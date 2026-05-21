@@ -532,6 +532,26 @@
       background: rgba(220, 38, 38, 0.15) !important;
     }
 
+    #cancel-btn {
+      width: 32px;
+      height: 32px;
+      border: none;
+      background: transparent;
+      cursor: pointer;
+      font-size: 16px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 50%;
+      color: var(--text-muted);
+      transition: color 0.2s, background 0.2s;
+    }
+    
+    #cancel-btn:hover {
+      background: var(--bg);
+      color: var(--text);
+    }
+
     #send-btn {
       background: var(--accent);
       color: #1a1b26;
@@ -634,7 +654,7 @@
         border-radius: 10px;
       }
 
-      #mic-btn {
+      #mic-btn, #cancel-btn {
         width: 44px;
         height: 44px;
         font-size: 20px;
@@ -692,6 +712,17 @@
       ></textarea>
       <div id="input-right">
         <div class="input-actions-row">
+          <select id="mic-lang" title="Voice Language" style="background:transparent; border:1px solid var(--border); border-radius:4px; color:var(--text-muted); font-size:11px; padding:2px 4px; cursor:pointer; outline:none;">
+            <option value="en-US" selected>EN</option>
+            <option value="vi-VN">VI</option>
+            <option value="zh-CN">ZH</option>
+            <option value="ja-JP">JA</option>
+            <option value="ko-KR">KO</option>
+            <option value="es-ES">ES</option>
+            <option value="fr-FR">FR</option>
+            <option value="de-DE">DE</option>
+          </select>
+          <button id="cancel-btn" title="Clear Text / Cancel">✕</button>
           <button id="mic-btn" title="Voice Input">🎤</button>
           <button id="send-btn" disabled>Send</button>
         </div>
@@ -1436,10 +1467,21 @@ stopBtn.addEventListener('click', async () => {
   }
 });
 
-// ── Voice Input ───────────────────────────────────────────────────────────
+// ── Voice Input & Cancel ──────────────────────────────────────────────────
 const micBtn = document.getElementById('mic-btn');
+const cancelBtn = document.getElementById('cancel-btn');
 let speechRecognition = null;
 let isListening = false;
+let autoSendOnEnd = false;
+
+cancelBtn.addEventListener('click', () => {
+  inputEl.value = '';
+  inputEl.style.height = 'auto';
+  if (isListening && speechRecognition) {
+    autoSendOnEnd = false;
+    speechRecognition.stop();
+  }
+});
 
 if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
   const SpeechRec = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -1455,6 +1497,7 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
 
   speechRecognition.onstart = () => {
     isListening = true;
+    autoSendOnEnd = false;
     micBtn.textContent = '🔴';
     micBtn.classList.add('listening');
   };
@@ -1476,18 +1519,28 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
 
   speechRecognition.onend = () => {
     stopListening();
+    if (autoSendOnEnd && inputEl.value.trim() !== '') {
+      sendMessage();
+    }
   };
 
   micBtn.addEventListener('click', () => {
     if (isListening) {
+      autoSendOnEnd = true;
       speechRecognition.stop();
     } else {
+      // Set the selected language right before starting
+      const langSelect = document.getElementById('mic-lang');
+      if (langSelect) {
+        speechRecognition.lang = langSelect.value;
+      }
       speechRecognition.start();
     }
   });
 } else {
   micBtn.style.opacity = '0.4';
   micBtn.style.cursor = 'not-allowed';
+  document.getElementById('mic-lang').style.display = 'none';
   micBtn.addEventListener('click', () => {
     alert('Voice input is disabled by your browser. Apple and Google require the web app to be accessed via HTTPS (secure context) or localhost to use the microphone.');
   });

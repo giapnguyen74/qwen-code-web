@@ -119,13 +119,14 @@ func checkOrigin(origin string, allowedOrigins []string) bool {
 			host = h
 		}
 		for _, allowed := range allowedOrigins {
-			if strings.EqualFold(origin, allowed) {
+			cleanAllowed := strings.TrimRight(allowed, "/")
+			if strings.EqualFold(origin, cleanAllowed) {
 				return true
 			}
-			if strings.EqualFold(u.Host, allowed) {
+			if strings.EqualFold(u.Host, cleanAllowed) {
 				return true
 			}
-			if strings.EqualFold(host, allowed) {
+			if strings.EqualFold(host, cleanAllowed) {
 				return true
 			}
 		}
