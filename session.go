@@ -21,45 +21,6 @@ type sessionFiles struct {
 	inputPath  string
 }
 
-func ensureProjectDir(dir string) error {
-	created := false
-	if _, err := os.Stat(dir); os.IsNotExist(err) {
-		if err := os.MkdirAll(dir, 0o755); err != nil {
-			return fmt.Errorf("mkdir %s: %w", dir, err)
-		}
-		fmt.Printf("Created directory: %s\n", dir)
-		created = true
-	}
-
-	// Check if already inside a git repo (walk up the tree)
-	if !created {
-		out, err := exec.Command("git", "-C", dir, "rev-parse", "--git-dir").
-			CombinedOutput()
-		if err == nil && strings.TrimSpace(string(out)) != "" {
-			return nil // already in a git repo
-		}
-	}
-
-	// Check for .git directly in this dir
-	if _, err := os.Stat(filepath.Join(dir, ".git")); err == nil {
-		return nil
-	}
-
-	// git init
-	if out, err := exec.Command("git", "-C", dir, "init").CombinedOutput(); err != nil {
-		fmt.Printf("Warning: git init failed (%v). Continuing without git.\n", string(out))
-		return nil
-	}
-	fmt.Printf("Initialised git repo in: %s\n", dir)
-
-	// Write .gitignore if absent
-	gi := filepath.Join(dir, ".gitignore")
-	if _, err := os.Stat(gi); os.IsNotExist(err) {
-		os.WriteFile(gi, []byte("node_modules/\ndist/\n.qwen-code-web/\n*.log\n"), 0o644) //nolint:errcheck
-		fmt.Println("Wrote .gitignore")
-	}
-	return nil
-}
 
 // sessionDirForProject returns ~/.qwen-code-web/sessions/<basename>_<8hexchars>/
 // keyed by the absolute project path so each project gets its own slot.

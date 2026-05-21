@@ -8,14 +8,20 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/websocket"
+	"golang.org/x/crypto/bcrypt"
 )
 
+//go:embed public/dashboard.html
+var dashboardHTML []byte
+
 //go:embed public/index.html
-var indexHTML []byte
+var conversationHTML []byte
 
 // ── WebSocket hub ─────────────────────────────────────────────────────────
 
@@ -56,12 +62,11 @@ func (h *hub) broadcast(msg []byte) {
 // ── Server ────────────────────────────────────────────────────────────────
 
 type serverConfig struct {
-	host       string
-	port       int
-	origins    []string
-	projectDir string
-	eventsPath string
-	inputPath  string
+	host         string
+	port         int
+	origins      []string
+	workspace    string
+	passwordHash string
 }
 
 type inputJob struct {
@@ -70,12 +75,13 @@ type inputJob struct {
 }
 
 type Server struct {
-	cfg        serverConfig
-	state      *State
-	tailer     *Tailer
-	hub        *hub
-	upgrader   websocket.Upgrader
-	inputQueue chan inputJob
+	cfg      serverConfig
+	projects *ProjectStore
+	procmgr  *ProcManager
+	upgrader websocket.Upgrader
+	
+	tokens   map[string]time.Time
+	tokensMu sync.Mutex
 }
 
 func isLocalOrigin(origin string) bool {
@@ -128,7 +134,7 @@ func checkOrigin(origin string, allowedOrigins []string) bool {
 	return false
 }
 
-func newServer(cfg serverConfig, state *State) *Server {
+func newServer(cfg serverConfig, projects *ProjectStore, procmgr *ProcManager) *Server {
 	upgrader := websocket.Upgrader{
 		ReadBufferSize:  1024,
 		WriteBufferSize: 4096,
@@ -139,34 +145,34 @@ func newServer(cfg serverConfig, state *State) *Server {
 	}
 
 	return &Server{
-		cfg:        cfg,
-		state:      state,
-		tailer:     newTailer(cfg.eventsPath),
-		hub:        newHub(),
-		upgrader:   upgrader,
-		inputQueue: make(chan inputJob, 1024),
+		cfg:      cfg,
+		projects: projects,
+		procmgr:  procmgr,
+		upgrader: upgrader,
+		tokens:   make(map[string]time.Time),
 	}
 }
 
 func (s *Server) run() error {
-	// Start sequential input writer worker
-	go s.inputWorker()
-
-	// Process live events: update state + broadcast to WS clients
-	go func() {
-		for raw := range s.tailer.Events {
-			s.onLiveEvent(raw)
-		}
-	}()
-	s.tailer.Start()
-
 	mux := http.NewServeMux()
-	mux.HandleFunc("/", s.handleIndex)
-	mux.HandleFunc("/status", s.handleStatus)
-	mux.HandleFunc("/message", s.handleMessage)
-	mux.HandleFunc("/approve", s.handleApprove)
-	mux.HandleFunc("/stop", s.handleStop)
-	mux.HandleFunc("/events", s.handleWS)
+
+	// ── Page routes ───────────────────────────────────────────────────
+	mux.HandleFunc("/", s.handleDashboard)
+	mux.HandleFunc("/project/", s.handleConversationPage)
+
+	mux.HandleFunc("/api/auth/login", s.handleLogin)
+
+	// Auth wrapper for all API routes (excluding login itself)
+	apiMux := http.NewServeMux()
+	apiMux.HandleFunc("/api/projects", s.handleListProjects)
+	apiMux.HandleFunc("/api/projects/add-folder", s.handleAddFolder)
+	apiMux.HandleFunc("/api/projects/create-repo", s.handleCreateRepo)
+	apiMux.HandleFunc("/api/projects/clone", s.handleCloneRepo)
+	apiMux.HandleFunc("/api/settings/global", s.handleUpdateGlobalSettings)
+	apiMux.HandleFunc("/api/workspace/folders", s.handleWorkspaceFolders)
+	apiMux.HandleFunc("/api/projects/", s.handleProjectAPI)
+
+	mux.Handle("/api/", s.authMiddleware(apiMux))
 
 	addr := fmt.Sprintf("%s:%d", s.cfg.host, s.cfg.port)
 	fmt.Fprintf(os.Stderr, "  [server] HTTP Server starting to listen on %s...\n", addr)
@@ -175,61 +181,421 @@ func (s *Server) run() error {
 	return err
 }
 
-func (s *Server) inputWorker() {
-	for job := range s.inputQueue {
-		err := appendInput(s.cfg.inputPath, job.data)
-		job.respCh <- err
+func (s *Server) handleProjectFiles(w http.ResponseWriter, r *http.Request, proj Project) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
 	}
+
+	dirParam := r.URL.Query().Get("dir")
+	// Clean the path to prevent directory traversal
+	cleanDir := filepath.Clean("/" + dirParam)
+	
+	// absolute target directory
+	targetDir := filepath.Join(proj.Path, cleanDir)
+	
+	// Ensure the targetDir is inside the project path (sanity check after Clean)
+	if !strings.HasPrefix(targetDir, proj.Path) {
+		writeError(w, http.StatusForbidden, "invalid directory")
+		return
+	}
+
+	entries, err := os.ReadDir(targetDir)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+
+	type fileEntry struct {
+		Name  string `json:"name"`
+		IsDir bool   `json:"isDir"`
+	}
+	
+	var list []fileEntry
+	for _, e := range entries {
+		list = append(list, fileEntry{
+			Name:  e.Name(),
+			IsDir: e.IsDir(),
+		})
+	}
+	
+	writeJSON(w, map[string]any{
+		"path": cleanDir,
+		"files": list,
+	})
 }
 
-// onLiveEvent inspects a live event for session lifecycle changes,
-// updates state, and broadcasts to all connected clients.
-func (s *Server) onLiveEvent(raw json.RawMessage) {
-	var base struct {
-		Type    string `json:"type"`
-		Subtype string `json:"subtype"`
-		Data    struct {
-			SessionID string `json:"session_id"`
-		} `json:"data"`
-	}
-	if err := json.Unmarshal(raw, &base); err == nil {
-		if base.Type == "system" {
-			switch base.Subtype {
-			case "session_start":
-				if base.Data.SessionID != "" {
-					s.state.setRunning(base.Data.SessionID)
-					s.hub.broadcast(s.marshalStatus())
-				}
-			case "session_end":
-				s.state.setStopped()
-				s.hub.broadcast(s.marshalStatus())
-			}
-		}
-	}
-	s.hub.broadcast(s.marshalQwenEvent(raw))
-}
+// ── Page handlers ─────────────────────────────────────────────────────────
 
-// ── HTTP handlers ─────────────────────────────────────────────────────────
-
-func (s *Server) handleIndex(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
 	if r.URL.Path != "/" {
 		http.NotFound(w, r)
 		return
 	}
 	w.Header().Set("Content-Type", "text/html; charset=utf-8")
-	w.Write(indexHTML) //nolint:errcheck
+	w.Write(dashboardHTML) //nolint:errcheck
 }
 
-func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
-	status, sessionID := s.state.get()
+func (s *Server) handleConversationPage(w http.ResponseWriter, r *http.Request) {
+	// Extract project ID from /project/{id}
+	id := strings.TrimPrefix(r.URL.Path, "/project/")
+	if id == "" {
+		http.NotFound(w, r)
+		return
+	}
+	// Verify project exists
+	proj := s.projects.GetProject(id)
+	if proj == nil {
+		http.NotFound(w, r)
+		return
+	}
+	w.Header().Set("Content-Type", "text/html; charset=utf-8")
+	w.Write(conversationHTML) //nolint:errcheck
+}
+
+// ── Project CRUD endpoints ────────────────────────────────────────────────
+
+func (s *Server) handleListProjects(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	projects := s.projects.ListProjects()
+	active := s.procmgr.ListActive()
+
+	type projectInfo struct {
+		Project
+		Status    string `json:"status"`
+		SessionID string `json:"sessionId,omitempty"`
+	}
+
+	result := make([]projectInfo, len(projects))
+	for i, p := range projects {
+		info := projectInfo{Project: p, Status: "idle"}
+		if ap, ok := active[p.ID]; ok {
+			status, sessionID := ap.State.get()
+			info.Status = status
+			info.SessionID = sessionID
+		}
+		result[i] = info
+	}
+
 	writeJSON(w, map[string]any{
-		"status":     status,
-		"sessionId":  sessionID,
-		"projectDir": s.cfg.projectDir,
+		"workspace":      s.projects.GetWorkspace(),
+		"globalQwenArgs": s.projects.GetGlobalQwenArgs(),
+		"projects":       result,
 	})
 }
 
-func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleWorkspaceFolders(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	ws := s.projects.GetWorkspace()
+	entries, err := os.ReadDir(ws)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	var folders []string
+	for _, e := range entries {
+		if e.IsDir() && !strings.HasPrefix(e.Name(), ".") {
+			folders = append(folders, e.Name())
+		}
+	}
+	writeJSON(w, map[string]any{"folders": folders})
+}
+
+// ── Auth ──────────────────────────────────────────────────────────────────
+
+func (s *Server) authMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if s.cfg.passwordHash == "" {
+			next.ServeHTTP(w, r)
+			return
+		}
+
+		cookie, err := r.Cookie("qwen_auth")
+		if err != nil || cookie.Value == "" {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		s.tokensMu.Lock()
+		expiry, ok := s.tokens[cookie.Value]
+		s.tokensMu.Unlock()
+
+		if !ok || time.Now().After(expiry) {
+			http.Error(w, "unauthorized", http.StatusUnauthorized)
+			return
+		}
+
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	
+	if s.cfg.passwordHash == "" {
+		writeJSON(w, map[string]any{"ok": true})
+		return
+	}
+
+	var body struct {
+		Password string `json:"password"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+
+	err := bcrypt.CompareHashAndPassword([]byte(s.cfg.passwordHash), []byte(body.Password))
+	if err != nil {
+		writeError(w, http.StatusUnauthorized, "invalid password")
+		return
+	}
+
+	// Generate a token
+	token := fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
+	
+	s.tokensMu.Lock()
+	s.tokens[token] = time.Now().Add(24 * time.Hour)
+	s.tokensMu.Unlock()
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "qwen_auth",
+		Value:    token,
+		Path:     "/",
+		MaxAge:   86400,
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+	})
+
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (s *Server) handleUpdateGlobalSettings(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPut {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		GlobalQwenArgs []string `json:"globalQwenArgs"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if err := s.projects.SetGlobalQwenArgs(body.GlobalQwenArgs); err != nil {
+		writeError(w, http.StatusInternalServerError, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (s *Server) handleAddFolder(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Path string `json:"path"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Path == "" {
+		writeError(w, http.StatusBadRequest, "path is required")
+		return
+	}
+	proj, err := s.projects.AddExistingFolder(body.Path)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, proj)
+}
+
+func (s *Server) handleCreateRepo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.Name == "" {
+		writeError(w, http.StatusBadRequest, "name is required")
+		return
+	}
+	proj, err := s.projects.CreateNewRepo(body.Name)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, proj)
+}
+
+func (s *Server) handleCloneRepo(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var body struct {
+		URL  string `json:"url"`
+		Name string `json:"name"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil || body.URL == "" {
+		writeError(w, http.StatusBadRequest, "url is required")
+		return
+	}
+	proj, err := s.projects.CloneRepo(body.URL, body.Name)
+	if err != nil {
+		writeError(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	writeJSON(w, proj)
+}
+
+// ── Project-scoped API router ─────────────────────────────────────────────
+
+func (s *Server) handleProjectAPI(w http.ResponseWriter, r *http.Request) {
+	// Parse: /api/projects/{id}/{action}
+	rest := strings.TrimPrefix(r.URL.Path, "/api/projects/")
+	parts := strings.SplitN(rest, "/", 2)
+	if len(parts) == 0 || parts[0] == "" {
+		http.NotFound(w, r)
+		return
+	}
+	projectID := parts[0]
+	action := ""
+	if len(parts) > 1 {
+		action = parts[1]
+	}
+
+	// DELETE /api/projects/{id} — remove project
+	if action == "" && r.Method == http.MethodDelete {
+		// Stop if running
+		if ap := s.procmgr.GetActive(projectID); ap != nil {
+			_ = s.procmgr.Stop(projectID)
+		}
+		if err := s.projects.RemoveProject(projectID); err != nil {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeJSON(w, map[string]any{"ok": true})
+		return
+	}
+
+	// PUT /api/projects/{id} — update project config
+	if action == "" && r.Method == http.MethodPut {
+		var body struct {
+			Name     string   `json:"name"`
+			QwenArgs []string `json:"qwenArgs"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+		proj, err := s.projects.UpdateProject(projectID, body.Name, body.QwenArgs)
+		if err != nil {
+			writeError(w, http.StatusNotFound, err.Error())
+			return
+		}
+		writeJSON(w, proj)
+		return
+	}
+
+	// Verify project exists for action routes
+	proj := s.projects.GetProject(projectID)
+	if proj == nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	switch action {
+	case "start":
+		s.handleProjectStart(w, r, *proj)
+	case "stop":
+		s.handleProjectStop(w, r, projectID)
+	case "status":
+		s.handleProjectStatus(w, r, projectID)
+	case "message":
+		s.handleProjectMessage(w, r, projectID)
+	case "approve":
+		s.handleProjectApprove(w, r, projectID)
+	case "events":
+		s.handleProjectWS(w, r, projectID)
+	case "files":
+		s.handleProjectFiles(w, r, *proj)
+	default:
+		http.NotFound(w, r)
+	}
+}
+
+// ── Project action handlers ───────────────────────────────────────────────
+
+func (s *Server) handleProjectStart(w http.ResponseWriter, r *http.Request, proj Project) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	qwenArgs := s.projects.GetGlobalQwenArgs()
+	if len(proj.QwenArgs) > 0 {
+		qwenArgs = proj.QwenArgs
+	}
+
+	ap, err := s.procmgr.Start(proj, qwenArgs)
+	if err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	status, sessionID := ap.State.get()
+	writeJSON(w, map[string]any{
+		"ok":        true,
+		"status":    status,
+		"sessionId": sessionID,
+	})
+}
+
+func (s *Server) handleProjectStop(w http.ResponseWriter, r *http.Request, projectID string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if err := s.procmgr.Stop(projectID); err != nil {
+		writeError(w, http.StatusConflict, err.Error())
+		return
+	}
+	writeJSON(w, map[string]any{"ok": true})
+}
+
+func (s *Server) handleProjectStatus(w http.ResponseWriter, r *http.Request, projectID string) {
+	proj := s.projects.GetProject(projectID)
+	if proj == nil {
+		writeError(w, http.StatusNotFound, "project not found")
+		return
+	}
+
+	status := "idle"
+	sessionID := ""
+	if ap := s.procmgr.GetActive(projectID); ap != nil {
+		status, sessionID = ap.State.get()
+	}
+
+	writeJSON(w, map[string]any{
+		"status":     status,
+		"sessionId":  sessionID,
+		"projectId":  proj.ID,
+		"projectDir": proj.Path,
+		"name":       proj.Name,
+	})
+}
+
+func (s *Server) handleProjectMessage(w http.ResponseWriter, r *http.Request, projectID string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -241,13 +607,20 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "text is required")
 		return
 	}
-	status, _ := s.state.get()
+
+	ap := s.procmgr.GetActive(projectID)
+	if ap == nil {
+		writeError(w, http.StatusConflict, "project is not running")
+		return
+	}
+	status, _ := ap.State.get()
 	if status == "stopped" {
 		writeError(w, http.StatusConflict, "session is stopped")
 		return
 	}
+
 	respCh := make(chan error, 1)
-	s.inputQueue <- inputJob{
+	ap.InputQueue <- inputJob{
 		data: map[string]any{
 			"type": "submit",
 			"text": strings.TrimSpace(body.Text),
@@ -261,7 +634,7 @@ func (s *Server) handleMessage(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
-func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleProjectApprove(w http.ResponseWriter, r *http.Request, projectID string) {
 	if r.Method != http.MethodPost {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -274,8 +647,15 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "requestId and allowed are required")
 		return
 	}
+
+	ap := s.procmgr.GetActive(projectID)
+	if ap == nil {
+		writeError(w, http.StatusConflict, "project is not running")
+		return
+	}
+
 	respCh := make(chan error, 1)
-	s.inputQueue <- inputJob{
+	ap.InputQueue <- inputJob{
 		data: map[string]any{
 			"type":       "confirmation_response",
 			"request_id": body.RequestID,
@@ -290,43 +670,62 @@ func (s *Server) handleApprove(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, map[string]any{"ok": true})
 }
 
-func (s *Server) handleStop(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	s.state.kill()
-	writeJSON(w, map[string]any{"ok": true})
-}
+// ── WebSocket handler (per-project event stream) ──────────────────────────
 
-// ── WebSocket handler ─────────────────────────────────────────────────────
-
-func (s *Server) handleWS(w http.ResponseWriter, r *http.Request) {
+func (s *Server) handleProjectWS(w http.ResponseWriter, r *http.Request, projectID string) {
 	conn, err := s.upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return
 	}
 	defer conn.Close()
 
-	// Subscribe to live events BEFORE replay to avoid a gap.
-	liveCh := s.hub.subscribe()
-	defer s.hub.unsubscribe(liveCh)
+	ap := s.procmgr.GetActive(projectID)
+
+	// Send initial status
+	proj := s.projects.GetProject(projectID)
+	if proj == nil {
+		return
+	}
+
+	status := "idle"
+	sessionID := ""
+	if ap != nil {
+		status, sessionID = ap.State.get()
+	}
 
 	write := func(msg []byte) bool {
 		return conn.WriteMessage(websocket.TextMessage, msg) == nil
 	}
 
 	// 1. Current status
-	if !write(s.marshalStatus()) {
+	if !write(mustMarshalRaw(map[string]any{
+		"type":      "server_status",
+		"status":    status,
+		"sessionId": sessionID,
+	})) {
 		return
 	}
+
+	// If project is not active, stay connected and wait for status updates
+	if ap == nil {
+		// Drain incoming WS frames to detect close
+		for {
+			if _, _, err := conn.ReadMessage(); err != nil {
+				return
+			}
+		}
+	}
+
+	// Subscribe to live events BEFORE replay to avoid a gap.
+	liveCh := ap.Hub.subscribe()
+	defer ap.Hub.unsubscribe(liveCh)
 
 	// 2. Replay full history from file
 	if !write([]byte(`{"type":"replay_start"}`)) {
 		return
 	}
-	for _, ev := range s.tailer.ReadAll() {
-		if !write(s.marshalQwenEvent(ev)) {
+	for _, ev := range ap.Tailer.ReadAll() {
+		if !write(marshalQwenEvent(ev)) {
 			return
 		}
 	}
@@ -346,8 +745,7 @@ replayDone:
 		return
 	}
 
-	// 4. Drain incoming WS frames (browser sends nothing, but we must read
-	//    to detect close frames and avoid connection leaks).
+	// 4. Drain incoming WS frames
 	connClosed := make(chan struct{})
 	go func() {
 		defer close(connClosed)
@@ -374,10 +772,38 @@ replayDone:
 	}
 }
 
-// ── Message helpers ───────────────────────────────────────────────────────
+// ── Event processing helpers (used by ProcManager) ────────────────────────
 
-func (s *Server) marshalStatus() []byte {
-	status, sessionID := s.state.get()
+// onProjectLiveEvent processes a raw event for an active project:
+// updates state and broadcasts to all WS clients.
+func onProjectLiveEvent(ap *ActiveProject, raw json.RawMessage) {
+	var base struct {
+		Type    string `json:"type"`
+		Subtype string `json:"subtype"`
+		Data    struct {
+			SessionID string `json:"session_id"`
+		} `json:"data"`
+	}
+	if err := json.Unmarshal(raw, &base); err == nil {
+		if base.Type == "system" {
+			switch base.Subtype {
+			case "session_start":
+				if base.Data.SessionID != "" {
+					ap.State.setRunning(base.Data.SessionID)
+					ap.Hub.broadcast(marshalProjectStatus(ap))
+				}
+			case "session_end":
+				ap.State.setStopped()
+				ap.Hub.broadcast(marshalProjectStatus(ap))
+			}
+		}
+	}
+	ap.Hub.broadcast(marshalQwenEvent(raw))
+}
+
+// marshalProjectStatus creates a server_status WS message for a project.
+func marshalProjectStatus(ap *ActiveProject) []byte {
+	status, sessionID := ap.State.get()
 	return mustMarshalRaw(map[string]any{
 		"type":      "server_status",
 		"status":    status,
@@ -385,7 +811,8 @@ func (s *Server) marshalStatus() []byte {
 	})
 }
 
-func (s *Server) marshalQwenEvent(raw json.RawMessage) []byte {
+// marshalQwenEvent wraps a raw qwen event for WS transmission.
+func marshalQwenEvent(raw json.RawMessage) []byte {
 	return mustMarshalRaw(map[string]any{
 		"type": "qwen_event",
 		"data": raw,
@@ -414,5 +841,3 @@ func mustMarshalRaw(v any) []byte {
 	b, _ := json.Marshal(v)
 	return b
 }
-
-

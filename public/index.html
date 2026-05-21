@@ -113,7 +113,20 @@
     #status-badge.running  { background: rgba(158,206,106,0.12); color: var(--green); }
     #status-badge.stopped  { background: rgba(247,118,142,0.12); color: var(--red); }
 
-    #stop-btn {
+    #back-btn {
+      background: transparent;
+      border: 1px solid var(--border);
+      color: var(--text-muted);
+      border-radius: 5px;
+      padding: 4px 10px;
+      font-size: 12px;
+      cursor: pointer;
+      transition: all 0.15s;
+      text-decoration: none;
+    }
+    #back-btn:hover { border-color: var(--accent); color: var(--accent); }
+
+    .header-action-btn {
       background: transparent;
       border: 1px solid var(--border);
       color: var(--text-muted);
@@ -123,7 +136,77 @@
       cursor: pointer;
       transition: all 0.15s;
     }
+    #stop-btn { }
     #stop-btn:hover { border-color: var(--red); color: var(--red); }
+    #start-btn { }
+    #start-btn:hover { border-color: var(--green); color: var(--green); }
+
+    /* ── Main Layout ─────────────────────────────────────────────────── */
+    #main-wrapper {
+      flex: 1;
+      display: flex;
+      flex-direction: row;
+      overflow: hidden;
+      min-height: 0;
+    }
+
+    /* ── Sidebar ─────────────────────────────────────────────────────── */
+    #sidebar {
+      width: 50%;
+      min-width: 250px;
+      max-width: 400px;
+      border-right: 1px solid var(--border);
+      background: var(--surface);
+      display: none;
+      flex-direction: column;
+      flex-shrink: 0;
+    }
+
+    #sidebar-header {
+      padding: 10px 16px;
+      border-bottom: 1px solid var(--border);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+
+    #sidebar-list {
+      flex: 1;
+      overflow-y: auto;
+    }
+
+    .file-item {
+      padding: 8px 16px;
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      font-size: 13px;
+      border-bottom: 1px solid rgba(255,255,255,0.02);
+      transition: background 0.1s;
+    }
+    .file-item:hover { background: var(--surface2); }
+    .file-item.dir { color: var(--accent); }
+    .file-item-icon { width: 16px; text-align: center; }
+
+    /* ── Chat Area ───────────────────────────────────────────────────── */
+    #chat-area {
+      flex: 1;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    @media (max-width: 768px) {
+      #sidebar { width: 100%; max-width: none; }
+      #main-wrapper.sidebar-open #chat-area { display: none; }
+    }
 
     /* ── Conversation ────────────────────────────────────────────────── */
     #conversation {
@@ -532,40 +615,93 @@
 <body>
 
 <div id="header">
-  <span id="header-logo">qwen-code-web</span>
+  <a id="back-btn" href="/">← Dashboard</a>
   <span id="header-sep">/</span>
   <span id="project-name">—</span>
   <div id="header-right">
-    <span id="status-badge" class="starting">● starting</span>
-    <button id="stop-btn">stop</button>
+    <button id="browse-btn" class="header-action-btn" onclick="toggleSidebar()">📁 Files</button>
+    <span id="status-badge" class="starting">● idle</span>
+    <button id="start-btn" class="header-action-btn" style="display:none">▶ start</button>
+    <button id="stop-btn" class="header-action-btn" style="display:none">stop</button>
   </div>
 </div>
 
-<div id="origin-warning" style="display: none;">
-  <strong>WebSocket Connection Failed.</strong> If you are accessing this server via a remote IP or domain, the connection may be blocked by same-origin security.<br>
-  Please configure your origin in <code>~/.qwen-code-web/settings.json</code> (e.g. <code>"origins": ["<span class="warning-origin-url"></span>"]</code>) or launch with <code>--origins <span class="warning-origin-url"></span></code>.
+<div id="main-wrapper">
+  <div id="sidebar">
+    <div id="sidebar-header">
+      <div id="sidebar-title">Project Files</div>
+      <button class="header-action-btn" onclick="toggleSidebar()" style="padding: 2px 6px;">✕</button>
+    </div>
+    <div id="sidebar-list"></div>
+  </div>
+
+  <div id="chat-area">
+    <div id="origin-warning" style="display: none;">
+      <strong>WebSocket Connection Failed.</strong> If you are accessing this server via a remote IP or domain, the connection may be blocked by same-origin security.<br>
+      Please configure your origin in <code>~/.qwen-code-web/settings.json</code> (e.g. <code>"origins": ["<span class="warning-origin-url"></span>"]</code>) or launch with <code>--origins <span class="warning-origin-url"></span></code>.
+    </div>
+
+    <div id="conversation"></div>
+
+    <div id="input-area">
+      <textarea
+        id="message-input"
+        placeholder="Message Qwen Code… (Enter to send, Shift+Enter for newline)"
+        rows="1"
+      ></textarea>
+      <div id="input-right">
+        <button id="send-btn" disabled>Send</button>
+        <span id="sending-label">sending…</span>
+      </div>
+    </div>
+  </div>
 </div>
 
-<div id="conversation"></div>
-
-<div id="input-area">
-  <textarea
-    id="message-input"
-    placeholder="Message Qwen Code… (Enter to send, Shift+Enter for newline)"
-    rows="1"
-  ></textarea>
-  <div id="input-right">
-    <button id="send-btn" disabled>Send</button>
-    <span id="sending-label">sending…</span>
+<!-- Auth Modal -->
+<div id="auth-modal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.8); z-index:10000; align-items:center; justify-content:center; flex-direction:column;">
+  <div style="background:var(--surface); padding:24px; border-radius:12px; border:1px solid var(--border); width:300px;">
+    <div style="font-size:16px; font-weight:600; margin-bottom:16px;">Authentication Required</div>
+    <div style="margin-bottom:8px; font-size:12px; color:var(--text-muted);">Password</div>
+    <input type="password" id="auth-password" style="width:100%; background:var(--bg); border:1px solid var(--border); padding:8px 12px; border-radius:6px; color:var(--text); margin-bottom:8px;" onkeydown="if(event.key==='Enter') submitAuth()">
+    <div id="auth-error" style="color:var(--red); font-size:12px; margin-bottom:16px; min-height:16px;"></div>
+    <button style="width:100%; background:var(--accent); color:var(--bg); padding:8px 12px; border:none; border-radius:6px; cursor:pointer; font-weight:600;" onclick="submitAuth()">Login</button>
   </div>
 </div>
 
 <script>
 // ── Config ────────────────────────────────────────────────────────────────
-const WS_URL = `ws://${location.host}/events`;
+// Extract project ID from URL: /project/{id}
+const PROJECT_ID = location.pathname.split('/').filter(Boolean).pop() || '';
+const API_BASE = `/api/projects/${PROJECT_ID}`;
+const WS_URL = `ws://${location.host}${API_BASE}/events`;
 
 // ── Marked setup ─────────────────────────────────────────────────────────
 marked.setOptions({ gfm: true, breaks: true });
+
+// ── Auth ──────────────────────────────────────────────────────────────────
+function showAuthModal() {
+  document.getElementById('auth-modal').style.display = 'flex';
+  document.getElementById('auth-password').focus();
+}
+
+async function submitAuth() {
+  const pwd = document.getElementById('auth-password').value;
+  const errEl = document.getElementById('auth-error');
+  try {
+    const res = await fetch('/api/auth/login', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ password: pwd })
+    });
+    if (!res.ok) {
+      errEl.textContent = 'Invalid password';
+      return;
+    }
+    location.reload();
+  } catch (err) {
+    errEl.textContent = err.message;
+  }
+}
 
 function renderMarkdown(text) {
   const html = marked.parse(text || '');
@@ -607,6 +743,124 @@ const statusBadge     = document.getElementById('status-badge');
 const projectNameEl   = document.getElementById('project-name');
 const sendingLabel    = document.getElementById('sending-label');
 let workingRow = null;
+
+// ── Sidebar Logic ─────────────────────────────────────────────────────────
+let fileTreeCache = {}; // path -> files
+let expandedDirs = new Set(['']); // empty string is root
+
+function toggleSidebar() {
+  const sidebar = document.getElementById('sidebar');
+  const wrapper = document.getElementById('main-wrapper');
+  if (sidebar.style.display === 'flex') {
+    sidebar.style.display = 'none';
+    wrapper.classList.remove('sidebar-open');
+  } else {
+    sidebar.style.display = 'flex';
+    wrapper.classList.add('sidebar-open');
+    if (!fileTreeCache['']) {
+      fetchAndRenderTree();
+    }
+  }
+}
+
+async function fetchAndRenderTree() {
+  if (!fileTreeCache['']) {
+    await fetchFilesForCache('');
+  }
+  const listEl = document.getElementById('sidebar-list');
+  listEl.innerHTML = renderTreeLevel('', 0);
+}
+
+async function fetchFilesForCache(dir) {
+  try {
+    const res = await fetch(`${API_BASE}/files?dir=${encodeURIComponent(dir)}`);
+    if (!res.ok) throw new Error('Failed to fetch files');
+    const data = await res.json();
+    fileTreeCache[dir] = data.files.sort((a, b) => {
+      if (a.isDir && !b.isDir) return -1;
+      if (!a.isDir && b.isDir) return 1;
+      return a.name.localeCompare(b.name);
+    });
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+async function toggleDir(dirPath, e) {
+  if (e) e.stopPropagation();
+  
+  if (expandedDirs.has(dirPath)) {
+    expandedDirs.delete(dirPath);
+  } else {
+    expandedDirs.add(dirPath);
+    if (!fileTreeCache[dirPath]) {
+      await fetchFilesForCache(dirPath);
+    }
+  }
+  const listEl = document.getElementById('sidebar-list');
+  listEl.innerHTML = renderTreeLevel('', 0);
+}
+
+function handleItemClick(path, isDir) {
+  // Insert path
+  insertFilePath(path + (isDir ? '/' : ''));
+  // Toggle dir expansion
+  if (isDir) {
+    toggleDir(path);
+  }
+}
+
+function renderTreeLevel(dirPath, depth) {
+  const files = fileTreeCache[dirPath];
+  if (!files) return '';
+  
+  let html = '';
+  for (const f of files) {
+    if (f.name.startsWith('.')) continue;
+    
+    const targetPath = dirPath === '' ? f.name : `${dirPath}/${f.name}`;
+    const padding = depth * 16 + 16;
+    
+    if (f.isDir) {
+      const isExpanded = expandedDirs.has(targetPath);
+      const icon = isExpanded ? '📂' : '📁';
+      html += `
+        <div class="file-item dir" style="padding-left: ${padding}px">
+          <div class="file-item-icon" onclick="toggleDir('${esc(targetPath)}', event)">${icon}</div>
+          <div style="flex:1" onclick="handleItemClick('${esc(targetPath)}', true)">${esc(f.name)}</div>
+        </div>
+      `;
+      if (isExpanded) {
+        html += renderTreeLevel(targetPath, depth + 1);
+      }
+    } else {
+      html += `
+        <div class="file-item" style="padding-left: ${padding}px" onclick="handleItemClick('${esc(targetPath)}', false)">
+          <div class="file-item-icon">📄</div>
+          <div style="flex:1">${esc(f.name)}</div>
+        </div>
+      `;
+    }
+  }
+  return html;
+}
+
+function insertFilePath(path) {
+  const input = document.getElementById('message-input');
+  const val = input.value;
+  if (val && !val.endsWith(' ')) {
+    input.value = val + ' ' + path + ' ';
+  } else {
+    input.value = val + path + ' ';
+  }
+  input.focus();
+  checkInput(); // update button state
+  
+  // Mobile only: Close sidebar when inserting a file
+  if (window.innerWidth <= 768) {
+    toggleSidebar();
+  }
+}
 
 // ── Working spinner ───────────────────────────────────────────────────────
 const SPINNER_FRAMES = ['⠋','⠙','⠹','⠸','⠼','⠴','⠦','⠧','⠇','⠏'];
@@ -673,10 +927,20 @@ let streamingText     = '';    // accumulated raw text
 // ── Status ────────────────────────────────────────────────────────────────
 function setStatus(status, sessionId) {
   sessionStatus = status;
-  const labels = { starting: '● starting', running: '● running', stopped: '○ stopped' };
+  const labels = { starting: '● starting', running: '● running', stopped: '○ stopped', idle: '○ idle' };
   statusBadge.textContent = labels[status] || status;
   statusBadge.className = status;
   sendBtn.disabled = (status !== 'running');
+  // Show/hide start/stop buttons based on status
+  const startBtn = document.getElementById('start-btn');
+  const stopBtn = document.getElementById('stop-btn');
+  if (status === 'idle' || status === 'stopped') {
+    startBtn.style.display = 'inline-block';
+    stopBtn.style.display = 'none';
+  } else {
+    startBtn.style.display = 'none';
+    stopBtn.style.display = 'inline-block';
+  }
 }
 
 // ── Toggle collapsible cards ──────────────────────────────────────────────
@@ -900,7 +1164,7 @@ async function sendApproval(requestId, allowed) {
   if (denyBtn)  denyBtn.disabled  = true;
 
   try {
-    await fetch('/approve', {
+    await fetch(`${API_BASE}/approve`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ requestId, allowed }),
@@ -1069,7 +1333,7 @@ async function sendMessage() {
   startWorking();
 
   try {
-    const res = await fetch('/message', {
+    const res = await fetch(`${API_BASE}/message`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ text }),
@@ -1104,22 +1368,43 @@ inputEl.addEventListener('input', () => {
   inputEl.style.height = Math.min(inputEl.scrollHeight, 200) + 'px';
 });
 
+// Start button
+document.getElementById('start-btn').addEventListener('click', async () => {
+  try {
+    const res = await fetch(`${API_BASE}/start`, { method: 'POST' });
+    if (res.ok) {
+      // Reconnect WS to get the new session
+      location.reload();
+    }
+  } catch (err) {
+    console.error('Start error:', err);
+  }
+});
+
 // Stop button
 stopBtn.addEventListener('click', async () => {
   if (!confirm('Stop the Qwen Code session?')) return;
   try {
-    await fetch('/stop', { method: 'POST' });
+    await fetch(`${API_BASE}/stop`, { method: 'POST' });
   } catch (err) {
     console.error('Stop error:', err);
   }
 });
 
 // Fetch initial status (shows project dir even before first WS message)
-fetch('/status')
-  .then(r => r.json())
+fetch(`${API_BASE}/status`)
+  .then(r => {
+    if (r.status === 401) {
+      showAuthModal();
+      return null;
+    }
+    return r.json();
+  })
   .then(data => {
-    if (data.projectDir) {
-      const name = data.projectDir.split('/').filter(Boolean).pop() || data.projectDir;
+    if (!data) return;
+    if (data.name) {
+      projectNameEl.textContent = data.name;
+    } else if (data.projectDir) {
       projectNameEl.textContent = data.projectDir;
     }
     setStatus(data.status, data.sessionId);

@@ -1,7 +1,6 @@
 package main
 
 import (
-	"bufio"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,22 +9,25 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+
+	"golang.org/x/crypto/bcrypt"
+	"golang.org/x/term"
 )
 
 // cliOpts holds our own flags; everything else is forwarded to qwen.
 type cliOpts struct {
-	projectDir string   // defaults to cwd
-	host       string   // defaults to "0.0.0.0"
-	port       int      // defaults to 4000
-	origins    []string // allowed WebSocket origins
-	qwenArgs   []string // passed through verbatim to qwen
+	workspace string   // defaults to cwd
+	host      string   // defaults to "0.0.0.0"
+	port      int      // defaults to 4000
+	origins   []string // allowed WebSocket origins
 }
 
 type settingsFile struct {
-	Host     string   `json:"host"`
-	Port     *int     `json:"port"`
-	Origins  []string `json:"origins"`
-	QwenArgs []string `json:"qwenArgs"`
+	Workspace    string   `json:"workspace"`
+	Host         string   `json:"host"`
+	Port         *int     `json:"port"`
+	Origins      []string `json:"origins"`
+	PasswordHash string   `json:"passwordHash,omitempty"`
 }
 
 func loadSettings() (settingsFile, error) {
@@ -49,14 +51,11 @@ func loadSettings() (settingsFile, error) {
 }
 
 // parseArgs splits os.Args into our flags and qwen's flags.
-// We claim: --project-dir, --port, --host, --origins (and their -short forms).
+// We claim: --workspace, --port, --host, --origins (and their -short forms).
 // Everything else (e.g. -c, -y, --model) is forwarded to qwen unchanged.
 func parseArgs(base cliOpts) cliOpts {
 	opts := base
 	args := os.Args[1:]
-
-	hasCliQwenArgs := false
-	var cliQwenArgs []string
 
 	for i := 0; i < len(args); i++ {
 		arg := args[i]
@@ -70,8 +69,8 @@ func parseArgs(base cliOpts) cliOpts {
 			opts.port = p
 			continue
 		}
-		if v, ok := cutPrefix(arg, "--project-dir="); ok {
-			opts.projectDir = v
+		if v, ok := cutPrefix(arg, "--workspace="); ok {
+			opts.workspace = v
 			continue
 		}
 		if v, ok := cutPrefix(arg, "--host="); ok {
@@ -99,12 +98,12 @@ func parseArgs(base cliOpts) cliOpts {
 			} else {
 				fatalf("missing value for --port")
 			}
-		case "--project-dir", "-project-dir":
+		case "--workspace", "-workspace":
 			if i+1 < len(args) {
 				i++
-				opts.projectDir = args[i]
+				opts.workspace = args[i]
 			} else {
-				fatalf("missing value for --project-dir")
+				fatalf("missing value for --workspace")
 			}
 		case "--host", "-host":
 			if i+1 < len(args) {
@@ -124,13 +123,8 @@ func parseArgs(base cliOpts) cliOpts {
 			printHelp()
 			os.Exit(0)
 		default:
-			hasCliQwenArgs = true
-			cliQwenArgs = append(cliQwenArgs, arg)
+			fatalf("unknown flag: %s", arg)
 		}
-	}
-
-	if hasCliQwenArgs {
-		opts.qwenArgs = cliQwenArgs
 	}
 
 	return opts
@@ -144,26 +138,27 @@ func cutPrefix(s, prefix string) (string, bool) {
 }
 
 func printHelp() {
-	fmt.Print(`Usage: qwen-code-web [OUR FLAGS] -- [QWEN FLAGS...]
+	fmt.Print(`Usage: qwen-code-web [FLAGS]
 
-Our flags (consumed by qwen-code-web):
-  --project-dir <path>   Project directory  (default: current directory)
-  --port <n>             HTTP server port   (default: 4000)
-  --host <addr>          Listen address     (default: 0.0.0.0 — all interfaces)
-  --origins <list>       WebSocket allowed origins (comma-separated list, e.g. "*")
-
-Everything behind -- is forwarded to qwen:
-  -c, -y, --model, ...   See: qwen --help
+Flags:
+  --workspace <path>   Workspace directory containing projects (default: cwd)
+  --port <n>           HTTP server port   (default: 4000)
+  --host <addr>        Listen address     (default: 0.0.0.0 — all interfaces)
+  --origins <list>     WebSocket allowed origins (comma-separated list, e.g. "*")
 
 Examples:
-  cd ~/my-project && qwen-code-web
-  qwen-code-web --project-dir ~/my-project
-  qwen-code-web -- -c
-  qwen-code-web --port 8080 --host 0.0.0.0 -- -y
+  cd ~/workspace && qwen-code-web
+  qwen-code-web --workspace ~/workspace
+  qwen-code-web --port 8080 --host 0.0.0.0
 `)
 }
 
 func main() {
+	if len(os.Args) >= 2 && (os.Args[1] == "--password" || os.Args[1] == "-password") {
+		setupPassword()
+		return
+	}
+
 	// 1. Start with hardcoded defaults
 	baseOpts := cliOpts{
 		host: "0.0.0.0",
@@ -175,6 +170,9 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Warning: failed to load settings.json: %v\n", err)
 	} else {
+		if settings.Workspace != "" {
+			baseOpts.workspace = settings.Workspace
+		}
 		if settings.Host != "" {
 			baseOpts.host = settings.Host
 		}
@@ -184,129 +182,121 @@ func main() {
 		if settings.Origins != nil {
 			baseOpts.origins = settings.Origins
 		}
-		if settings.QwenArgs != nil {
-			baseOpts.qwenArgs = settings.QwenArgs
-		}
 	}
 
 	// 3. Overwrite with command-line arguments (highest priority)
 	opts := parseArgs(baseOpts)
 
-	// ── Resolve project directory ────────────────────────────────────────
-	if opts.projectDir == "" {
-		opts.projectDir, err = os.Getwd()
+	// ── Resolve workspace directory ──────────────────────────────────────
+	if opts.workspace == "" {
+		opts.workspace, err = os.Getwd()
 		if err != nil {
 			fatalf("getwd: %v", err)
 		}
 	}
-	projectDir, err := filepath.Abs(opts.projectDir)
+	workspace, err := filepath.Abs(opts.workspace)
 	if err != nil {
-		fatalf("resolving project dir: %v", err)
+		fatalf("resolving workspace: %v", err)
 	}
 
-	if err := ensureProjectDir(projectDir); err != nil {
-		fatalf("%v", err)
+	// Ensure workspace directory exists
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		fatalf("creating workspace dir: %v", err)
 	}
 
-	// ── Session files in ~/.qwen-code-web/sessions/<name>/ ───────────────
-	sf, err := ensureSessionFiles(projectDir)
+	// ── Initialize project store ─────────────────────────────────────────
+	projects, err := NewProjectStore(workspace)
 	if err != nil {
-		fatalf("session files: %v", err)
+		fatalf("project store: %v", err)
 	}
 
-	if err := os.WriteFile(sf.eventsPath, nil, 0o600); err != nil {
-		fatalf("initialising events file: %v", err)
-	}
-	if err := os.WriteFile(sf.inputPath, nil, 0o600); err != nil {
-		fatalf("initialising input file: %v", err)
-	}
+	// ── Initialize process manager ───────────────────────────────────────
+	procmgr := NewProcManager()
 
-	// ── Print web UI address ────────────────────────────────────────────────
+	// ── Print startup info ───────────────────────────────────────────────
 	displayHost := opts.host
 	if displayHost == "0.0.0.0" {
 		displayHost = "localhost"
 	}
 	url := fmt.Sprintf("http://%s:%d", displayHost, opts.port)
-	fmt.Fprintf(os.Stderr, "\n  Web UI → %s\n\n", url)
+	fmt.Fprintf(os.Stderr, "\n  Web UI   → %s\n", url)
+	fmt.Fprintf(os.Stderr, "  Workspace → %s\n\n", workspace)
 
-	// ── Spawn qwen (runs headless, no terminal) ──────────────────────────
-	fmt.Fprintf(os.Stderr, "Starting Qwen Code in: %s\n", projectDir)
-	proc, err := spawnQwen(spawnOptions{
-		projectDir: projectDir,
-		eventsPath: sf.eventsPath,
-		inputPath:  sf.inputPath,
-		extraArgs:  opts.qwenArgs,
-	})
-	if err != nil {
-		fmt.Fprintf(os.Stderr, "\nFailed to spawn qwen: %v\n", err)
-		fmt.Fprintln(os.Stderr, `Make sure "qwen" is installed and available in PATH.`)
-		os.Exit(1)
-	}
-
-	state := newState()
-	state.setProcess(proc)
-
-	// ── Stream qwen stderr → main server stderr with [qwen] prefix ────
-	go func() {
-		scanner := bufio.NewScanner(proc.stderrPipe)
-		// Allow up to 1MB lines (qwen can be verbose)
-		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
-		for scanner.Scan() {
-			fmt.Fprintf(os.Stderr, "[qwen] %s\n", scanner.Text())
-		}
-	}()
-
-	// ── Drain PTY master (discard Qwen TUI output to prevent blocking) ──
-	go func() {
-		defer proc.ptyMaster.Close()
-		buf := make([]byte, 4096)
-		for {
-			if _, err := proc.ptyMaster.Read(buf); err != nil {
-				return
-			}
-		}
-	}()
-
-	// ── Monitor qwen process ─────────────────────────────────────────────
-	go func() {
-		err := proc.cmd.Wait()
-		state.setStopped()
-		if err != nil {
-			fmt.Fprintf(os.Stderr, "\n[monitor] Qwen process exited with error: %v\n", err)
-		} else {
-			fmt.Fprintln(os.Stderr, "\n[monitor] Qwen process exited successfully.")
-		}
-		fmt.Fprintln(os.Stderr, "[monitor] Server continues running. Use Ctrl+C to stop.")
-	}()
-
-	// ── Server (runs silently in the background, no TTY needed) ──────────
+	// ── Start HTTP server ────────────────────────────────────────────────
 	srv := newServer(serverConfig{
-		host:       opts.host,
-		port:       opts.port,
-		origins:    opts.origins,
-		projectDir: projectDir,
-		eventsPath: sf.eventsPath,
-		inputPath:  sf.inputPath,
-	}, state)
+		host:         opts.host,
+		port:         opts.port,
+		origins:      opts.origins,
+		workspace:    workspace,
+		passwordHash: settings.PasswordHash,
+	}, projects, procmgr)
 
 	go func() {
 		if err := srv.run(); err != nil {
 			fmt.Fprintf(os.Stderr, "server error: %v\n", err)
-			state.kill()
+			procmgr.KillAll()
 			os.Exit(1)
 		}
 	}()
 
-	// ── Graceful shutdown on SIGTERM/SIGINT only ──────────────────────────
+	// ── Graceful shutdown on SIGTERM/SIGINT ───────────────────────────────
 	sig := make(chan os.Signal, 1)
 	signal.Notify(sig, syscall.SIGTERM, syscall.SIGINT)
 	<-sig
 	fmt.Fprintln(os.Stderr, "\nReceived signal, shutting down...")
-	state.kill()
+	procmgr.KillAll()
 	os.Exit(0)
 }
 
 func fatalf(format string, args ...any) {
 	fmt.Fprintf(os.Stderr, "Error: "+format+"\n", args...)
 	os.Exit(1)
+}
+
+func setupPassword() {
+	fmt.Print("Enter new password: ")
+	pwdBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+	if err != nil {
+		fatalf("failed to read password: %v", err)
+	}
+	fmt.Println()
+
+	fmt.Print("Confirm password: ")
+	confirmBytes, err := term.ReadPassword(int(os.Stdin.Fd()))
+	if err != nil {
+		fatalf("failed to read password: %v", err)
+	}
+	fmt.Println()
+
+	if string(pwdBytes) != string(confirmBytes) {
+		fatalf("passwords do not match")
+	}
+
+	hash, err := bcrypt.GenerateFromPassword(pwdBytes, bcrypt.DefaultCost)
+	if err != nil {
+		fatalf("failed to hash password: %v", err)
+	}
+
+	settings, _ := loadSettings()
+	settings.PasswordHash = string(hash)
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		fatalf("user home: %v", err)
+	}
+	path := filepath.Join(home, ".qwen-code-web", "settings.json")
+	if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
+		fatalf("mkdir: %v", err)
+	}
+
+	data, err := json.MarshalIndent(settings, "", "  ")
+	if err != nil {
+		fatalf("marshal: %v", err)
+	}
+
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		fatalf("write settings: %v", err)
+	}
+
+	fmt.Println("Password set successfully.")
 }
