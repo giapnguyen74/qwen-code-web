@@ -712,16 +712,6 @@
       ></textarea>
       <div id="input-right">
         <div class="input-actions-row">
-          <select id="mic-lang" title="Voice Language" style="background:transparent; border:1px solid var(--border); border-radius:4px; color:var(--text-muted); font-size:11px; padding:2px 4px; cursor:pointer; outline:none;">
-            <option value="en-US" selected>EN</option>
-            <option value="vi-VN">VI</option>
-            <option value="zh-CN">ZH</option>
-            <option value="ja-JP">JA</option>
-            <option value="ko-KR">KO</option>
-            <option value="es-ES">ES</option>
-            <option value="fr-FR">FR</option>
-            <option value="de-DE">DE</option>
-          </select>
           <button id="cancel-btn" title="Clear Text / Cancel">✕</button>
           <button id="mic-btn" title="Voice Input">🎤</button>
           <button id="send-btn" disabled>Send</button>
@@ -1395,6 +1385,31 @@ function connect() {
 
 connect();
 
+// ── Input UI State ────────────────────────────────────────────────────────
+function updateInputUI() {
+  const hasText = inputEl.value.trim().length > 0;
+  
+  if (isListening) {
+    // Recording: Hide Send, show Mic and Cancel
+    sendBtn.style.display = 'none';
+    cancelBtn.style.display = 'flex';
+    micBtn.style.display = 'flex';
+  } else if (hasText) {
+    // Typing: Hide Mic, show Cancel and Send
+    micBtn.style.display = 'none';
+    cancelBtn.style.display = 'flex';
+    sendBtn.style.display = 'block';
+  } else {
+    // Default (Empty): Show Mic, hide Cancel and Send
+    micBtn.style.display = 'flex';
+    cancelBtn.style.display = 'none';
+    sendBtn.style.display = 'none';
+  }
+}
+
+// Initial UI state
+updateInputUI();
+
 // ── Send message ──────────────────────────────────────────────────────────
 async function sendMessage() {
   const text = inputEl.value.trim();
@@ -1402,6 +1417,7 @@ async function sendMessage() {
 
   inputEl.value = '';
   inputEl.style.height = 'auto';
+  updateInputUI();
   sendBtn.disabled = true;
   sendingLabel.classList.add('show');
 
@@ -1442,6 +1458,7 @@ inputEl.addEventListener('keydown', (e) => {
 inputEl.addEventListener('input', () => {
   inputEl.style.height = 'auto';
   inputEl.style.height = Math.min(inputEl.scrollHeight, 200) + 'px';
+  updateInputUI();
 });
 
 // Start button
@@ -1481,6 +1498,7 @@ cancelBtn.addEventListener('click', () => {
     autoSendOnEnd = false;
     speechRecognition.stop();
   }
+  updateInputUI();
 });
 
 if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
@@ -1493,6 +1511,7 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
     isListening = false;
     micBtn.textContent = '🎤';
     micBtn.classList.remove('listening');
+    updateInputUI();
   };
 
   speechRecognition.onstart = () => {
@@ -1500,6 +1519,7 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
     autoSendOnEnd = false;
     micBtn.textContent = '🔴';
     micBtn.classList.add('listening');
+    updateInputUI();
   };
 
   speechRecognition.onresult = (event) => {
@@ -1529,18 +1549,13 @@ if ('webkitSpeechRecognition' in window || 'SpeechRecognition' in window) {
       autoSendOnEnd = true;
       speechRecognition.stop();
     } else {
-      // Set the selected language right before starting
-      const langSelect = document.getElementById('mic-lang');
-      if (langSelect) {
-        speechRecognition.lang = langSelect.value;
-      }
+      speechRecognition.lang = localStorage.getItem('qwen_dictate_lang') || 'en-US';
       speechRecognition.start();
     }
   });
 } else {
   micBtn.style.opacity = '0.4';
   micBtn.style.cursor = 'not-allowed';
-  document.getElementById('mic-lang').style.display = 'none';
   micBtn.addEventListener('click', () => {
     alert('Voice input is disabled by your browser. Apple and Google require the web app to be accessed via HTTPS (secure context) or localhost to use the microphone.');
   });
