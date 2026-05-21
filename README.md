@@ -11,11 +11,17 @@ It is a lightweight, single-binary solution that lets you leave your AI agents r
 
 ### Gallery
 
-![Desktop Dashboard](assets/Screenshot1.png)
+<p align="center">
+  <img src="assets/Screenshot1.png" width="800" alt="Desktop Dashboard">
+</p>
 
-![Desktop Demo](assets/demo1.webp)
+<p align="center">
+  <img src="assets/demo1.webp" width="800" alt="Desktop Demo">
+</p>
 
-![Mobile Vibe Coding](assets/mobile-demo.webp)
+<p align="center">
+  <img src="assets/mobile-demo.webp" width="300" alt="Mobile Vibe Coding">
+</p>
 
 ## Features
 
