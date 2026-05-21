@@ -172,13 +172,11 @@ func (pm *ProcManager) Stop(projectID string) error {
 		}
 	}()
 
-	select {
-	case <-done:
-		status, _ := ap.State.get()
-		if status != "stopped" {
-			fmt.Fprintf(os.Stderr, "[procmgr] Graceful exit timed out for %q, killing\n", ap.Project.Name)
-			ap.State.kill()
-		}
+	<-done
+	status, _ := ap.State.get()
+	if status != "stopped" {
+		fmt.Fprintf(os.Stderr, "[procmgr] Graceful exit timed out for %q, killing\n", ap.Project.Name)
+		ap.State.kill()
 	}
 
 	// Clean up

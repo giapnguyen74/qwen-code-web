@@ -79,7 +79,7 @@ type Server struct {
 	projects *ProjectStore
 	procmgr  *ProcManager
 	upgrader websocket.Upgrader
-	
+
 	tokens   map[string]time.Time
 	tokensMu sync.Mutex
 }
@@ -190,10 +190,10 @@ func (s *Server) handleProjectFiles(w http.ResponseWriter, r *http.Request, proj
 	dirParam := r.URL.Query().Get("dir")
 	// Clean the path to prevent directory traversal
 	cleanDir := filepath.Clean("/" + dirParam)
-	
+
 	// absolute target directory
 	targetDir := filepath.Join(proj.Path, cleanDir)
-	
+
 	// Ensure the targetDir is inside the project path (sanity check after Clean)
 	if !strings.HasPrefix(targetDir, proj.Path) {
 		writeError(w, http.StatusForbidden, "invalid directory")
@@ -210,7 +210,7 @@ func (s *Server) handleProjectFiles(w http.ResponseWriter, r *http.Request, proj
 		Name  string `json:"name"`
 		IsDir bool   `json:"isDir"`
 	}
-	
+
 	var list []fileEntry
 	for _, e := range entries {
 		list = append(list, fileEntry{
@@ -218,9 +218,9 @@ func (s *Server) handleProjectFiles(w http.ResponseWriter, r *http.Request, proj
 			IsDir: e.IsDir(),
 		})
 	}
-	
+
 	writeJSON(w, map[string]any{
-		"path": cleanDir,
+		"path":  cleanDir,
 		"files": list,
 	})
 }
@@ -324,12 +324,26 @@ func (s *Server) authMiddleware(next http.Handler) http.Handler {
 
 		s.tokensMu.Lock()
 		expiry, ok := s.tokens[cookie.Value]
+		isValid := ok && time.Now().Before(expiry)
+		if isValid {
+			s.tokens[cookie.Value] = time.Now().Add(10 * 24 * time.Hour)
+		}
 		s.tokensMu.Unlock()
 
-		if !ok || time.Now().After(expiry) {
+		if !isValid {
 			http.Error(w, "unauthorized", http.StatusUnauthorized)
 			return
 		}
+
+		// Renew the cookie in the browser to match the server-side extension
+		http.SetCookie(w, &http.Cookie{
+			Name:     "qwen_auth",
+			Value:    cookie.Value,
+			Path:     "/",
+			MaxAge:   864000, // 10 days
+			HttpOnly: true,
+			SameSite: http.SameSiteLaxMode,
+		})
 
 		next.ServeHTTP(w, r)
 	})
@@ -340,7 +354,7 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	
+
 	if s.cfg.passwordHash == "" {
 		writeJSON(w, map[string]any{"ok": true})
 		return
@@ -362,16 +376,16 @@ func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 
 	// Generate a token
 	token := fmt.Sprintf("%d-%d", time.Now().UnixNano(), os.Getpid())
-	
+
 	s.tokensMu.Lock()
-	s.tokens[token] = time.Now().Add(24 * time.Hour)
+	s.tokens[token] = time.Now().Add(10 * 24 * time.Hour)
 	s.tokensMu.Unlock()
 
 	http.SetCookie(w, &http.Cookie{
 		Name:     "qwen_auth",
 		Value:    token,
 		Path:     "/",
-		MaxAge:   86400,
+		MaxAge:   864000, // 10 days
 		HttpOnly: true,
 		SameSite: http.SameSiteLaxMode,
 	})
