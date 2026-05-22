@@ -1,7 +1,7 @@
 package main
 
 import (
-	_ "embed"
+	"embed"
 	"archive/zip"
 	"bytes"
 	"crypto/rand"
@@ -28,6 +28,9 @@ var dashboardHTML []byte
 
 //go:embed public/index.html
 var conversationHTML []byte
+
+//go:embed public/*
+var publicFS embed.FS
 
 // ── WebSocket hub ─────────────────────────────────────────────────────────
 
@@ -192,6 +195,7 @@ func (s *Server) run() error {
 	// ── Page routes ───────────────────────────────────────────────────
 	mux.HandleFunc("/", s.handleDashboard)
 	mux.HandleFunc("/project/", s.handleConversationPage)
+	mux.Handle("/public/", http.FileServer(http.FS(publicFS)))
 
 	mux.HandleFunc("/api/auth/login", s.handleLogin)
 

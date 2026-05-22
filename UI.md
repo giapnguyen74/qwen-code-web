@@ -8,7 +8,7 @@ The project utilizes a modern, minimalist dark-mode aesthetic loosely inspired b
 
 *   **No Tailwind CSS:** We use Vanilla CSS with scoped global variables to keep the project completely dependency-free and ultra-lightweight.
 *   **Single-Page Layout:** The app is designed as a rigid, full-screen Flexbox layout (`100dvh`). The `body` itself never scrolls; instead, specific internal containers (like `#conversation` or `#sidebar-list`) scroll independently.
-*   **Icon Choice:** We prefer simple, mordern, lightweight Unicode symbols, or minimalist, barebones inline SVGs (with `stroke="currentColor"`) for interactive tools. We do not use heavy icon libraries or font-awesome.
+*   **Icon Choice:** We prefer simple, modern, lightweight Unicode symbols, or minimalist, barebones inline SVGs (with `stroke="currentColor"`) for interactive tools. We do not use heavy icon libraries or font-awesome.
 
 ## 2. Global CSS Variables
 
