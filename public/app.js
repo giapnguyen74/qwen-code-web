@@ -254,9 +254,11 @@ function closeDropdown() {
   }
 }
 
-window.addEventListener('click', () => {
-  if (dropdownOpen) closeDropdown();
-});
+window.addEventListener('click', (e) => {
+  if (dropdownOpen && !e.target.closest('.dropdown-menu') && !e.target.closest('.file-view-btn')) {
+    closeDropdown();
+  }
+}, { capture: true });
 
 // Close dropdown on any scroll (since it's position: fixed)
 window.addEventListener('scroll', () => {

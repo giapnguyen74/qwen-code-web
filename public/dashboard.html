@@ -746,11 +746,14 @@ async function startProject(id) {
     const res = await fetch(`/api/projects/${id}/start`, { method: 'POST' });
     if (!res.ok) {
       const data = await res.json();
+      if (res.status === 409 && data.error && data.error.includes("already running")) {
+        window.location.href = `/project/${id}`;
+        return;
+      }
       showToast(data.error || 'Failed to start', 'error');
       return;
     }
-    showToast('Qwen started');
-    fetchProjects();
+    window.location.href = `/project/${id}`;
   } catch (err) {
     showToast('Failed to start: ' + err.message, 'error');
   }
