@@ -2,11 +2,13 @@ package main
 
 import (
 	_ "embed"
+	"archive/zip"
 	"bytes"
 	"crypto/rand"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"net/url"
@@ -384,6 +386,86 @@ func (s *Server) handleProjectReadFile(w http.ResponseWriter, r *http.Request, p
 	writeError(w, http.StatusBadRequest, "binary file format not supported for inline viewing")
 }
 
+func (s *Server) handleProjectDownloadFile(w http.ResponseWriter, r *http.Request, proj Project) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	pathParam := r.URL.Query().Get("path")
+	cleanPath := filepath.Clean("/" + pathParam)
+	targetPath := filepath.Join(proj.Path, cleanPath)
+
+	if !isSafePath(targetPath, proj.Path) {
+		writeError(w, http.StatusForbidden, "invalid file path")
+		return
+	}
+
+	info, err := os.Stat(targetPath)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "file not found")
+		return
+	}
+
+	basename := filepath.Base(targetPath)
+	if basename == "/" || basename == "." {
+		basename = filepath.Base(proj.Path)
+	}
+
+	if info.IsDir() {
+		// Serve as ZIP
+		w.Header().Set("Content-Type", "application/zip")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s.zip"`, basename))
+
+		zw := zip.NewWriter(w)
+		defer zw.Close()
+
+		filepath.Walk(targetPath, func(path string, info os.FileInfo, err error) error {
+			if err != nil {
+				return err
+			}
+
+			relPath, err := filepath.Rel(filepath.Dir(targetPath), path)
+			if err != nil {
+				return err
+			}
+
+			if info.IsDir() {
+				if !strings.HasSuffix(relPath, "/") {
+					relPath += "/"
+				}
+				_, err = zw.Create(relPath)
+				return err
+			}
+
+			f, err := os.Open(path)
+			if err != nil {
+				return nil // Skip files we can't read
+			}
+			defer f.Close()
+
+			fw, err := zw.Create(relPath)
+			if err != nil {
+				return err
+			}
+
+			_, err = io.Copy(fw, f)
+			return err
+		})
+	} else {
+		// Serve file
+		w.Header().Set("Content-Type", "application/octet-stream")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, basename))
+		f, err := os.Open(targetPath)
+		if err != nil {
+			writeError(w, http.StatusInternalServerError, "failed to open file")
+			return
+		}
+		defer f.Close()
+		io.Copy(w, f)
+	}
+}
+
 // ── Project action handlers ─────────────────────────────────────────────────────────
 
 func (s *Server) handleDashboard(w http.ResponseWriter, r *http.Request) {
@@ -721,12 +803,105 @@ func (s *Server) handleProjectAPI(w http.ResponseWriter, r *http.Request) {
 		s.handleProjectReadFile(w, r, *proj)
 	case "files/raw":
 		s.handleProjectRawFile(w, r, *proj)
+	case "files/download":
+		s.handleProjectDownloadFile(w, r, *proj)
+	case "files/upload":
+		s.handleProjectUploadFile(w, r, *proj)
+	case "files/delete":
+		s.handleProjectDeleteFile(w, r, *proj)
 	default:
 		http.NotFound(w, r)
 	}
 }
 
 // ── Project action handlers ───────────────────────────────────────────────
+
+func (s *Server) handleProjectDeleteFile(w http.ResponseWriter, r *http.Request, proj Project) {
+	if r.Method != http.MethodDelete {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	pathParam := r.URL.Query().Get("path")
+	cleanPath := filepath.Clean("/" + pathParam)
+	targetPath := filepath.Join(proj.Path, cleanPath)
+
+	if !isSafePath(targetPath, proj.Path) {
+		writeError(w, http.StatusForbidden, "invalid file path")
+		return
+	}
+
+	// Do not allow deleting the project root
+	if filepath.Clean(targetPath) == filepath.Clean(proj.Path) {
+		writeError(w, http.StatusForbidden, "cannot delete project root")
+		return
+	}
+
+	if err := os.RemoveAll(targetPath); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to delete: "+err.Error())
+		return
+	}
+
+	writeJSON(w, map[string]string{"status": "deleted", "path": targetPath})
+}
+
+func (s *Server) handleProjectUploadFile(w http.ResponseWriter, r *http.Request, proj Project) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+
+	if err := r.ParseMultipartForm(100 << 20); err != nil { // 100 MB max in memory
+		writeError(w, http.StatusBadRequest, "failed to parse multipart form")
+		return
+	}
+
+	pathParam := r.URL.Query().Get("path")
+	cleanPath := filepath.Clean("/" + pathParam)
+	targetDir := filepath.Join(proj.Path, cleanPath)
+
+	if !isSafePath(targetDir, proj.Path) {
+		writeError(w, http.StatusForbidden, "invalid directory path")
+		return
+	}
+
+	info, err := os.Stat(targetDir)
+	if err != nil {
+		writeError(w, http.StatusNotFound, "directory not found")
+		return
+	}
+	if !info.IsDir() {
+		writeError(w, http.StatusBadRequest, "target path is not a directory")
+		return
+	}
+
+	file, header, err := r.FormFile("file")
+	if err != nil {
+		writeError(w, http.StatusBadRequest, "missing 'file' in form")
+		return
+	}
+	defer file.Close()
+
+	destPath := filepath.Join(targetDir, filepath.Base(header.Filename))
+	if !isSafePath(destPath, proj.Path) {
+		writeError(w, http.StatusForbidden, "invalid destination path")
+		return
+	}
+
+	dst, err := os.Create(destPath)
+	if err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to create destination file")
+		return
+	}
+	defer dst.Close()
+
+	if _, err := io.Copy(dst, file); err != nil {
+		writeError(w, http.StatusInternalServerError, "failed to save file")
+		return
+	}
+
+	writeJSON(w, map[string]string{"status": "ok", "path": destPath})
+}
 
 func (s *Server) handleProjectStart(w http.ResponseWriter, r *http.Request, proj Project) {
 	if r.Method != http.MethodPost {

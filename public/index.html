@@ -212,6 +212,44 @@
       color: var(--accent);
     }
 
+    /* ── Dropdown Menu ───────────────────────────────────────────────── */
+    .dropdown-menu {
+      position: fixed;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 4px 0;
+      min-width: 160px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.5);
+      z-index: 9999;
+      display: none;
+      flex-direction: column;
+    }
+    .dropdown-item {
+      padding: 6px 16px;
+      font-size: 13px;
+      color: var(--text);
+      cursor: pointer;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      background: transparent;
+      border: none;
+      text-align: left;
+      width: 100%;
+    }
+    .dropdown-item:hover {
+      background: var(--surface2);
+      color: var(--accent);
+    }
+    .dropdown-item.danger {
+      color: var(--red);
+    }
+    .dropdown-item.danger:hover {
+      background: rgba(247, 118, 142, 0.1);
+      color: var(--red);
+    }
+
     /* ── Chat Area ───────────────────────────────────────────────────── */
     #chat-area {
       flex: 1;
@@ -709,7 +747,12 @@
   <div id="sidebar">
     <div id="sidebar-header">
       <div id="sidebar-title">Project Files</div>
-      <button class="header-action-btn" onclick="toggleSidebar()" style="padding: 2px 6px;">✕</button>
+      <div style="display:flex; align-items:center; gap:8px;">
+        <button class="header-action-btn" onclick="uploadToFolder('')" style="padding: 2px 6px;" title="Upload to Root">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="17 8 12 3 7 8"></polyline><line x1="12" y1="3" x2="12" y2="15"></line></svg>
+        </button>
+        <button class="header-action-btn" onclick="toggleSidebar()" style="padding: 2px 6px;">✕</button>
+      </div>
     </div>
     <div id="sidebar-list"></div>
   </div>
@@ -722,6 +765,10 @@
       <div style="padding:12px 16px; border-bottom:1px solid var(--border); display:flex; justify-content:space-between; align-items:center; background:var(--surface2);">
         <div id="fv-title" style="font-weight:600; font-family:var(--font-mono); font-size:13px; color:var(--accent); white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">filename.txt</div>
         <div style="display:flex; align-items:center; gap:16px;">
+          <button id="fv-download-btn" class="header-action-btn" onclick="downloadCurrentFile()" style="padding: 2px 6px;" title="Download">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path><polyline points="7 10 12 15 17 10"></polyline><line x1="12" y1="15" x2="12" y2="3"></line></svg>
+          </button>
+          <button id="md-toggle-btn" class="header-action-btn" onclick="toggleMarkdownView()" style="display:none;">👁 Render</button>
           <button class="header-action-btn" onclick="closeFileViewer()" style="padding: 2px 6px;" title="Close Viewer">✕</button>
         </div>
       </div>
@@ -773,6 +820,8 @@
     <button style="width:100%; background:var(--accent); color:var(--bg); padding:8px 12px; border:none; border-radius:6px; cursor:pointer; font-weight:600;" onclick="submitAuth()">Login</button>
   </div>
 </div>
+<!-- Global Dropdown Menu -->
+<div id="action-dropdown" class="dropdown-menu"></div>
 
 <script>
 // ── Config ────────────────────────────────────────────────────────────────
@@ -935,8 +984,8 @@ function renderTreeLevel(dirPath, depth) {
         <div class="file-item dir" style="padding-left: ${padding}px">
           <div class="file-item-icon" onclick="handleItemClick('${esc(targetPath)}', true, event)">${icon}</div>
           <div style="flex:1" onclick="handleItemClick('${esc(targetPath)}', true, event)">${esc(f.name)}</div>
-          <button class="file-view-btn" onclick="insertFilePath('${esc(targetPath)}/', event)" title="Insert Path">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          <button class="file-view-btn" onclick="openDropdown(event, '${esc(targetPath)}', true)" title="More Actions">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><circle cx="12" cy="12" r="1"></circle><circle cx="12" cy="5" r="1"></circle><circle cx="12" cy="19" r="1"></circle></svg>
           </button>
         </div>
       `;
@@ -948,8 +997,8 @@ function renderTreeLevel(dirPath, depth) {
         <div class="file-item" style="padding-left: ${padding}px">
           <div class="file-item-icon" onclick="handleItemClick('${esc(targetPath)}', false, event)">📄</div>
           <div style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap;" onclick="handleItemClick('${esc(targetPath)}', false, event)">${esc(f.name)}</div>
-          <button class="file-view-btn" onclick="insertFilePath('${esc(targetPath)}', event)" title="Insert Path">
-            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><line x1="12" y1="5" x2="12" y2="19"></line><line x1="5" y1="12" x2="19" y2="12"></line></svg>
+          <button class="file-view-btn" onclick="openDropdown(event, '${esc(targetPath)}', false)" title="More Actions">
+            <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="display:block;"><circle cx="12" cy="12" r="1"></circle><circle cx="12" cy="5" r="1"></circle><circle cx="12" cy="19" r="1"></circle></svg>
           </button>
         </div>
       `;
@@ -973,6 +1022,124 @@ function insertFilePath(path, event) {
   // Mobile only: Close sidebar when inserting a file
   if (window.innerWidth <= 768) {
     toggleSidebar();
+  }
+}
+
+function downloadFile(path, event) {
+  if (event) event.stopPropagation();
+  const a = document.createElement('a');
+  a.href = `${API_BASE}/files/download?path=${encodeURIComponent(path)}`;
+  a.download = '';
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+}
+
+function downloadCurrentFile() {
+  if (currentFilePath) {
+    downloadFile(currentFilePath);
+  }
+}
+
+function uploadToFolder(path, event) {
+  if (event) event.stopPropagation();
+  const input = document.createElement('input');
+  input.type = 'file';
+  input.onchange = async (e) => {
+    const file = e.target.files[0];
+    if (!file) return;
+    const formData = new FormData();
+    formData.append('file', file);
+    
+    try {
+      const res = await fetch(`${API_BASE}/files/upload?path=${encodeURIComponent(path)}`, {
+        method: 'POST',
+        body: formData
+      });
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        alert("Upload failed: " + (errData.error || res.statusText));
+      } else {
+        fetchAndRenderTree();
+      }
+    } catch (err) {
+      alert("Upload failed: " + err.message);
+    }
+  };
+  input.click();
+}
+
+// ── Dropdown Logic ────────────────────────────────────────────────────────
+let dropdownOpen = false;
+
+function closeDropdown() {
+  const dd = document.getElementById('action-dropdown');
+  if (dd) {
+    dd.style.display = 'none';
+    dropdownOpen = false;
+  }
+}
+
+window.addEventListener('click', () => {
+  if (dropdownOpen) closeDropdown();
+});
+
+function openDropdown(event, path, isDir) {
+  event.stopPropagation();
+  event.preventDefault();
+  closeDropdown();
+
+  const dd = document.getElementById('action-dropdown');
+  dd.innerHTML = '';
+  
+  if (isDir) {
+    dd.innerHTML += `<button class="dropdown-item" onclick="insertFilePath('${esc(path)}/', event)"><span>➕</span> Insert Path</button>`;
+    dd.innerHTML += `<button class="dropdown-item" onclick="uploadToFolder('${esc(path)}', event)"><span>⬆️</span> Upload File</button>`;
+    dd.innerHTML += `<button class="dropdown-item" onclick="downloadFile('${esc(path)}', event)"><span>⬇️</span> Download ZIP</button>`;
+  } else {
+    dd.innerHTML += `<button class="dropdown-item" onclick="insertFilePath('${esc(path)}', event)"><span>➕</span> Insert Path</button>`;
+    dd.innerHTML += `<button class="dropdown-item" onclick="downloadFile('${esc(path)}', event)"><span>⬇️</span> Download File</button>`;
+  }
+  
+  dd.innerHTML += `<div style="height:1px; background:var(--border); margin:4px 0;"></div>`;
+  dd.innerHTML += `<button class="dropdown-item danger" onclick="deleteFile('${esc(path)}', event)"><span>🗑</span> Delete</button>`;
+
+  dd.style.display = 'flex';
+  
+  // Position it
+  const rect = event.currentTarget.getBoundingClientRect();
+  let top = rect.bottom + 4;
+  let left = rect.right - 160; // align right roughly
+  
+  // Need to make sure it doesn't go off screen bottom
+  // We don't have accurate height until displayed, but we can guess ~130px max
+  if (top + 130 > window.innerHeight) {
+    top = rect.top - 130; 
+  }
+  
+  dd.style.top = top + 'px';
+  dd.style.left = left + 'px';
+  
+  dropdownOpen = true;
+}
+
+async function deleteFile(path, event) {
+  if (event) event.stopPropagation();
+  closeDropdown();
+  if (!confirm(`Are you sure you want to permanently delete '${path}'?\nThis cannot be undone.`)) {
+    return;
+  }
+  
+  try {
+    const res = await fetch(`${API_BASE}/files/delete?path=${encodeURIComponent(path)}`, { method: 'DELETE' });
+    if (!res.ok) {
+      const errData = await res.json().catch(() => ({}));
+      alert("Delete failed: " + (errData.error || res.statusText));
+    } else {
+      fetchAndRenderTree();
+    }
+  } catch (err) {
+    alert("Delete failed: " + err.message);
   }
 }
 
@@ -1623,15 +1790,61 @@ fetch(`${API_BASE}/status`)
   .catch(console.error);
 
 // ── File Viewer ───────────────────────────────────────────────────────────
+let currentFileContent = '';
+let isMarkdownRendered = false;
+
+function toggleMarkdownView() {
+  isMarkdownRendered = !isMarkdownRendered;
+  const btn = document.getElementById('md-toggle-btn');
+  const content = document.getElementById('fv-content');
+  
+  if (isMarkdownRendered) {
+    btn.textContent = 'RAW';
+    content.innerHTML = '<div class="markdown-body" style="padding: 20px;">' + marked.parse(currentFileContent) + '</div>';
+    if (window.hljs) {
+      content.querySelectorAll('pre code').forEach(block => {
+        hljs.highlightElement(block);
+      });
+    }
+  } else {
+    btn.textContent = '👁 Render';
+    const pre = document.createElement('pre');
+    pre.style.cssText = "margin:0; padding:16px; font-size:13px; font-family:var(--font-mono); min-height:100%; overflow-x:auto;";
+    const code = document.createElement('code');
+    code.className = "language-markdown hljs";
+    code.style.cssText = "background:transparent; padding:0;";
+    code.textContent = currentFileContent;
+    pre.appendChild(code);
+    
+    content.innerHTML = '';
+    content.appendChild(pre);
+    
+    if (window.hljs) {
+      hljs.highlightElement(code);
+    }
+  }
+}
+
 async function openFileViewer(path, event) {
   if (event) event.stopPropagation();
+  
+  // Mobile only: Close sidebar when opening a file so it doesn't cover the viewer
+  if (window.innerWidth <= 768) {
+    const sidebar = document.getElementById('sidebar');
+    if (sidebar.style.display === 'flex') {
+      toggleSidebar();
+    }
+  }
+
   const panel = document.getElementById('file-viewer-panel');
   const conv = document.getElementById('conversation');
   const title = document.getElementById('fv-title');
   const content = document.getElementById('fv-content');
+  const mdToggleBtn = document.getElementById('md-toggle-btn');
   
   title.textContent = path;
   content.innerHTML = '<div style="color:var(--text-muted); text-align:center; padding: 40px;">Loading...</div>';
+  mdToggleBtn.style.display = 'none';
   
   // Swap panels
   conv.style.display = 'none';
@@ -1647,19 +1860,28 @@ async function openFileViewer(path, event) {
     const data = await res.json();
     
     if (data.type === 'text') {
-      const pre = document.createElement('pre');
-      pre.style.cssText = "margin:0; padding:16px; font-size:13px; font-family:var(--font-mono); min-height:100%; overflow-x:auto;";
-      const code = document.createElement('code');
-      code.className = "hljs";
-      code.style.cssText = "background:transparent; padding:0;";
-      code.textContent = data.content; // textContent prevents XSS
-      pre.appendChild(code);
+      const isMd = path.toLowerCase().endsWith('.md') || path.toLowerCase().endsWith('.mdx') || path.toLowerCase().endsWith('.markdown');
       
-      content.innerHTML = '';
-      content.appendChild(pre);
-      
-      if (window.hljs) {
-        hljs.highlightElement(code);
+      if (isMd) {
+        currentFileContent = data.content;
+        mdToggleBtn.style.display = 'block';
+        isMarkdownRendered = false; // set to false so toggle turns it to true
+        toggleMarkdownView();
+      } else {
+        const pre = document.createElement('pre');
+        pre.style.cssText = "margin:0; padding:16px; font-size:13px; font-family:var(--font-mono); min-height:100%; overflow-x:auto;";
+        const code = document.createElement('code');
+        code.className = "hljs";
+        code.style.cssText = "background:transparent; padding:0;";
+        code.textContent = data.content; // textContent prevents XSS
+        pre.appendChild(code);
+        
+        content.innerHTML = '';
+        content.appendChild(pre);
+        
+        if (window.hljs) {
+          hljs.highlightElement(code);
+        }
       }
     } else if (data.type === 'image') {
       content.innerHTML = `<div style="display:flex; justify-content:center; align-items:center; min-height:100%; padding:20px;"><img src="${data.url}" style="max-width:100%; max-height: 70vh; object-fit: contain; border-radius:4px; box-shadow:0 4px 12px rgba(0,0,0,0.5);" /></div>`;
