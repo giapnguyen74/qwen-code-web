@@ -98,7 +98,15 @@ async function fetchAndRenderTree() {
     await fetchFilesForCache('');
   }
   const listEl = document.getElementById('sidebar-list');
-  listEl.innerHTML = renderTreeLevel('', 0);
+  if (listEl) listEl.innerHTML = renderTreeLevel('', 0);
+}
+
+async function refreshTree() {
+  const dirs = Array.from(expandedDirs);
+  if (!dirs.includes('')) dirs.push('');
+  await Promise.all(dirs.map(d => fetchFilesForCache(d)));
+  const listEl = document.getElementById('sidebar-list');
+  if (listEl) listEl.innerHTML = renderTreeLevel('', 0);
 }
 
 async function fetchFilesForCache(dir) {
@@ -113,6 +121,8 @@ async function fetchFilesForCache(dir) {
     });
   } catch (err) {
     console.error(err);
+    delete fileTreeCache[dir];
+    expandedDirs.delete(dir);
   }
 }
 
@@ -234,7 +244,7 @@ function uploadToFolder(path, event) {
         const errData = await res.json().catch(() => ({}));
         alert("Upload failed: " + (errData.error || res.statusText));
       } else {
-        fetchAndRenderTree();
+        refreshTree();
       }
     } catch (err) {
       alert("Upload failed: " + err.message);
@@ -324,7 +334,7 @@ async function deleteFile(path, event) {
       const errData = await res.json().catch(() => ({}));
       alert("Delete failed: " + (errData.error || res.statusText));
     } else {
-      fetchAndRenderTree();
+      refreshTree();
     }
   } catch (err) {
     alert("Delete failed: " + err.message);
